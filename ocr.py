@@ -12,7 +12,8 @@ class OCREngine:
         if log_cb:
             log_cb("正在載入 OCR 模型（首次需要下載，請稍候）...")
         import easyocr
-        self._reader = easyocr.Reader(["ko"], gpu=False, verbose=False)
+        # ch_sim enables Chinese character (漢字) recognition used in TR quizzes
+        self._reader = easyocr.Reader(["ko", "ch_sim"], gpu=False, verbose=False)
         if log_cb:
             log_cb("OCR 模型載入完成。")
 
@@ -42,26 +43,31 @@ class OCREngine:
 
 def _preprocess_for_ocr(img_bgr: np.ndarray, scale: bool = True) -> np.ndarray:
     """
-    Game text typically has drop shadows and colored outlines on busy backgrounds.
-    Strategy: convert to grayscale, enhance contrast, optionally scale up.
+    Preprocess for game OCR.
+    Key insight: Tales Runner quizzes/chalkboards use WHITE text on DARK backgrounds.
+    We auto-detect and invert so EasyOCR always sees dark text on light background.
     """
-    # Convert to grayscale
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # CLAHE: adaptive contrast enhancement — helps with text on gradient backgrounds
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(4, 4))
+    # Auto-invert: if average pixel < 128 the background is dark (e.g. chalkboard)
+    # EasyOCR performs significantly better with dark-text-on-light-background
+    if np.mean(gray) < 128:
+        gray = cv2.bitwise_not(gray)
+
+    # CLAHE: adaptive contrast — helps separate text from textured backgrounds
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
     gray = clahe.apply(gray)
 
-    # Light sharpening to make glyph edges crisper
+    # Sharpen to make glyph edges crisper
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
     gray = cv2.filter2D(gray, -1, kernel)
     gray = np.clip(gray, 0, 255).astype(np.uint8)
 
-    # Scale up small images — EasyOCR works best with text ≥ 20px tall
+    # Scale up small captures so text height ≥ 32px
     if scale:
         h, w = gray.shape
-        if h < 80:
-            factor = max(2, 80 // h)
+        if h < 100:
+            factor = max(2, 100 // h)
             gray = cv2.resize(gray, (w * factor, h * factor),
                               interpolation=cv2.INTER_CUBIC)
 
