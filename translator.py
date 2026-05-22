@@ -34,7 +34,7 @@ class TranslationEngine:
         results = self.translate_batch([text])
         return results[0] if results else ""
 
-    def translate_batch(self, texts: list[str]) -> list[str]:
+    def translate_batch(self, texts: list[str], log_cb=None) -> list[str]:
         """Translate multiple texts; uses one API call for DeepSeek."""
         if not texts:
             return []
@@ -43,8 +43,12 @@ class TranslationEngine:
         api_key = self._config.get("deepseek_api_key", "") if self._config else ""
 
         if backend == "deepseek" and api_key:
-            return self._batch_deepseek(texts, api_key)
+            if log_cb:
+                log_cb(f"[翻譯引擎] DeepSeek ({self._config.get('deepseek_model', 'deepseek-v4-flash')})")
+            return self._batch_deepseek(texts, api_key, log_cb=log_cb)
         else:
+            if log_cb:
+                log_cb("[翻譯引擎] Google Translate")
             return [self._translate_google(t) for t in texts]
 
     def update_config(self, config):
@@ -77,7 +81,7 @@ class TranslationEngine:
                 return f"[翻譯失敗: {e}]"
         return "[無法翻譯]"
 
-    def _batch_deepseek(self, texts: list[str], api_key: str) -> list[str]:
+    def _batch_deepseek(self, texts: list[str], api_key: str, log_cb=None) -> list[str]:
         # Return cached items immediately
         results = [self._cache.get(t.strip(), "") for t in texts]
         missing_idx = [i for i, r in enumerate(results) if not r]
@@ -108,9 +112,10 @@ class TranslationEngine:
                 max_tokens=512,
                 temperature=0.1,
             )
-            translated = self._parse_numbered(
-                resp.choices[0].message.content.strip(), len(missing_texts)
-            )
+            raw = resp.choices[0].message.content.strip()
+            if log_cb:
+                log_cb(f"[DeepSeek 回應] {raw[:120]}{'…' if len(raw) > 120 else ''}")
+            translated = self._parse_numbered(raw, len(missing_texts))
             for i, (orig, trans) in enumerate(zip(missing_texts, translated)):
                 if trans and not trans.startswith("["):
                     self._store(orig, trans)
@@ -118,6 +123,8 @@ class TranslationEngine:
 
         except Exception as e:
             err = f"[DeepSeek 失敗: {e}]"
+            if log_cb:
+                log_cb(err)
             for i in missing_idx:
                 results[i] = err
 

@@ -436,7 +436,7 @@ class TRTransApp:
         # Batch translate all bboxes in one API call
         bboxes = [bbox for bbox, _ in items]
         texts  = [text for _, text in items]
-        translated = self.translator.translate_batch(texts)
+        translated = self.translator.translate_batch(texts, log_cb=self._log_threadsafe)
         translated_items = list(zip(bboxes, translated))
 
         if self.game_overlay and self.game_overlay.exists():
@@ -464,7 +464,7 @@ class TRTransApp:
         self._last_text = text
         self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
 
-        translated = self.translator.translate(text)
+        translated = self.translator.translate_batch([text], log_cb=self._log_threadsafe)[0]
         if translated and self.overlay:
             self.overlay.win.after(0, lambda t=translated: self.overlay.update_text(t))
             self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
