@@ -33,10 +33,7 @@ class TRTransApp:
         self.config = Config()
         self.capture = ScreenCapture()
         self.ocr = OCREngine()
-        self.translator = TranslationEngine(
-            source=self.config.get("translation_source"),
-            target=self.config.get("translation_target"),
-        )
+        self.translator = TranslationEngine(config=self.config)
         self.overlay: TranslationOverlay | None = None
         self.game_overlay: GameOverlay | None = None
 
@@ -123,8 +120,48 @@ class TRTransApp:
                                     font=cjk_font(10))
         self._status_lbl.pack(side=tk.LEFT)
 
+        # ── Translation backend ─────────────────────────────────────────
+        sec_tr = self._section(content, "翻譯引擎")
+        tr_grid = tk.Frame(sec_tr, bg=self.BG)
+        tr_grid.pack(fill=tk.X)
+
+        self._backend_var = tk.StringVar(value=self.config.get("translation_backend", "google"))
+        tk.Radiobutton(tr_grid, text="Google Translate（免費）",
+                       variable=self._backend_var, value="google",
+                       bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+                       activebackground=self.BG, font=cjk_font(10),
+                       command=self._on_backend_change,
+                       ).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Radiobutton(tr_grid, text="DeepSeek AI（需要 API Key）",
+                       variable=self._backend_var, value="deepseek",
+                       bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+                       activebackground=self.BG, font=cjk_font(10),
+                       command=self._on_backend_change,
+                       ).grid(row=1, column=0, columnspan=2, sticky="w")
+
+        tk.Label(tr_grid, text="API Key:", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=2, column=0, sticky="w", pady=(4, 1))
+        self._apikey_var = tk.StringVar(value=self.config.get("deepseek_api_key", ""))
+        self._apikey_entry = tk.Entry(
+            tr_grid, textvariable=self._apikey_var, show="*",
+            bg=self.BG2, fg=self.FG, insertbackground="white",
+            relief=tk.FLAT, font=("Consolas", 9), width=34,
+        )
+        self._apikey_entry.grid(row=2, column=1, sticky="w", padx=(6, 0))
+
+        tk.Label(tr_grid, text="模型:", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=3, column=0, sticky="w", pady=(2, 0))
+        self._model_var = tk.StringVar(value=self.config.get("deepseek_model", "deepseek-v4-flash"))
+        tk.Entry(
+            tr_grid, textvariable=self._model_var,
+            bg=self.BG2, fg=self.FG, insertbackground="white",
+            relief=tk.FLAT, font=("Consolas", 9), width=20,
+        ).grid(row=3, column=1, sticky="w", padx=(6, 0))
+
+        self._on_backend_change()  # set initial enabled state
+
         # ── Settings ────────────────────────────────────────────────────
-        sec3 = self._section(content, "設定")
+        sec3 = self._section(content, "其他設定")
         settings_grid = tk.Frame(sec3, bg=self.BG)
         settings_grid.pack(fill=tk.X)
 
@@ -285,10 +322,19 @@ class TRTransApp:
         self._stop()
         self.overlay = None
 
+    def _on_backend_change(self):
+        is_deepseek = self._backend_var.get() == "deepseek"
+        state = tk.NORMAL if is_deepseek else tk.DISABLED
+        self._apikey_entry.config(state=state)
+
     def _apply_settings(self):
         self.config.set("overlay_font_size", self._fontsize_var.get())
         self.config.set("overlay_alpha", self._alpha_var.get())
         self.config.set("capture_interval", self._interval_var.get())
+        self.config.set("translation_backend", self._backend_var.get())
+        self.config.set("deepseek_api_key", self._apikey_var.get().strip())
+        self.config.set("deepseek_model", self._model_var.get().strip() or "deepseek-v4-flash")
+        self.translator.update_config(self.config)
         if self.overlay and self.overlay.win.winfo_exists():
             self.overlay.win.attributes("-alpha", self._alpha_var.get())
         self._log("設定已套用。")
