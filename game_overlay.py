@@ -65,20 +65,44 @@ class _BLENDFUNCTION(ctypes.Structure):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _find_cjk_font(size: int):
+    """
+    Find a font that can actually render CJK (Chinese/Korean) characters.
+    Korean Windows often lacks Traditional Chinese fonts, so we try Korean
+    fonts (Batang/Gulim) which include the full CJK Unified Ideographs block.
+    We verify each candidate by measuring a sample CJK character.
+    """
     candidates = [
-        r"C:\Windows\Fonts\msjh.ttc",
+        # Traditional Chinese (ideal)
+        r"C:\Windows\Fonts\msjh.ttc",     # Microsoft JhengHei
         r"C:\Windows\Fonts\msjhbd.ttc",
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\simsun.ttc",
+        # Simplified Chinese (covers most CJK)
+        r"C:\Windows\Fonts\msyh.ttc",     # Microsoft YaHei
+        r"C:\Windows\Fonts\msyhbd.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",   # SimSun
+        r"C:\Windows\Fonts\simhei.ttf",   # SimHei
+        # Korean fonts — Batang & Gulim include CJK Unified Ideographs
+        r"C:\Windows\Fonts\batang.ttc",   # Batang (Korean serif, has CJK)
+        r"C:\Windows\Fonts\gulim.ttc",    # Gulim (Korean sans, has CJK)
+        # macOS
         "/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf",
     ]
+    probe_img  = Image.new("RGB", (60, 40))
+    probe_draw = ImageDraw.Draw(probe_img)
     for path in candidates:
         if os.path.exists(path):
             try:
-                return ImageFont.truetype(path, size)
+                font = ImageFont.truetype(path, size)
+                # Verify it can actually render a CJK character
+                bb = probe_draw.textbbox((0, 0), "貝", font=font, anchor="lt")
+                if bb[2] > bb[0]:          # non-zero width → can render CJK
+                    print(f"[overlay] font: {os.path.basename(path)}", flush=True)
+                    return font
             except Exception:
                 pass
+    # Absolute last resort — load_default() can't render CJK but at least won't crash
+    print("[overlay] WARNING: no CJK font found, text may be invisible", flush=True)
     return ImageFont.load_default()
 
 
@@ -184,8 +208,21 @@ class GameOverlay:
 
         if is_windows():
             # Set content + position atomically, then show
-            self._ulw(img, gx, gy)
+            ok = self._ulw(img, gx, gy)
             self.win.deiconify()
+            # Diagnostic — shows in the console / run.bat window
+            first_box = ""
+            for bbox, text in translations:
+                if text and not text.startswith("["):
+                    x1,y1 = int(bbox[0][0]), int(bbox[0][1])
+                    x3,y3 = int(bbox[2][0]), int(bbox[2][1])
+                    first_box = f"bbox=({x1},{y1})-({x3},{y3})"
+                    break
+            print(
+                f"[overlay] win=({gx},{gy}) size={gw}x{gh}  "
+                f"{first_box}  ulw={'OK' if ok else 'FAIL'}",
+                flush=True,
+            )
         else:
             self.win.deiconify()
             self._show_fallback(img, gx, gy, gw, gh)
@@ -263,7 +300,7 @@ class GameOverlay:
         if not hbm:
             gdi32.DeleteDC(hdc_mem)
             u32.ReleaseDC(None, hdc_screen)
-            return
+            return False
 
         ctypes.memmove(pBits, pixels, len(pixels))
         old_bm = gdi32.SelectObject(hdc_mem, hbm)
@@ -278,7 +315,7 @@ class GameOverlay:
         pt_src = _POINT(0, 0)
         sz     = _SIZE(w, h)
 
-        u32.UpdateLayeredWindow(
+        ok = u32.UpdateLayeredWindow(
             hwnd,
             hdc_screen,
             ctypes.byref(pt_dst),   # window screen position
@@ -294,6 +331,7 @@ class GameOverlay:
         gdi32.DeleteObject(hbm)
         gdi32.DeleteDC(hdc_mem)
         u32.ReleaseDC(None, hdc_screen)
+        return bool(ok)
 
     # ── macOS / Linux fallback ────────────────────────────────────────────────
 
