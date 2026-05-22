@@ -1,11 +1,38 @@
 """
-In-place game overlay: transparent, click-through window that draws
-translated text directly over the original Korean text positions.
+In-place game overlay using PIL image rendering + Win32 colorkey transparency.
+PIL guarantees exact pixel values for the colorkey background, avoiding the
+GDI/DWM color-management issues that made tkinter canvas background unreliable.
 """
 import tkinter as tk
-from utils import cjk_font, is_windows
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+from utils import is_windows
+import os
 
-_TRANSPARENT = "#FF00FF"  # Magenta as transparent color key
+_KEY_RGB      = (255, 0, 255)     # exact magenta — transparent colorkey
+_KEY_HEX      = "#FF00FF"
+_KEY_COLORREF = 0x00FF00FF        # COLORREF: R=0xFF G=0x00 B=0xFF
+
+_BG_RGB    = (26, 26, 46)         # dark navy background behind text
+_TEXT_RGB  = (224, 224, 255)      # light blue-white text
+_BORDER_RGB = (74, 144, 217)      # accent border
+
+
+def _find_cjk_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        r"C:\Windows\Fonts\msjh.ttc",     # Microsoft JhengHei (Traditional Chinese)
+        r"C:\Windows\Fonts\msjhbd.ttc",
+        r"C:\Windows\Fonts\msyh.ttc",     # Microsoft YaHei
+        r"C:\Windows\Fonts\simsun.ttc",
+        "/Library/Fonts/PingFang.ttc",    # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
 
 
 class GameOverlay:
@@ -13,94 +40,86 @@ class GameOverlay:
         self.win = tk.Toplevel()
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.win.configure(bg=_TRANSPARENT)
+        self.win.configure(bg=_KEY_HEX)
 
-        self.canvas = tk.Canvas(
-            self.win, bg=_TRANSPARENT, highlightthickness=0
-        )
+        self.canvas = tk.Canvas(self.win, bg=_KEY_HEX, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        self._img_ref = None
+        self._font_cache: dict[int, ImageFont.FreeTypeFont] = {}
 
-        # Force window to be mapped before applying Win32 attributes
         self.win.update_idletasks()
         self.win.update()
 
         if is_windows():
-            self._setup_windows_overlay()
-        else:
-            # macOS: tkinter's wrapper works fine here
-            self.win.attributes("-transparentcolor", _TRANSPARENT)
+            self._setup_windows()
 
-    def _setup_windows_overlay(self):
-        """
-        Bypass tkinter's -transparentcolor wrapper (unreliable on some Windows
-        configs) and call SetLayeredWindowAttributes directly via ctypes.
-        COLORREF for magenta (#FF00FF): R=255 G=0 B=255 → 0x00FF00FF
-        """
+    def _setup_windows(self):
         import ctypes
-        user32 = ctypes.windll.user32
-
-        self.win.update()
+        u32 = ctypes.windll.user32
         hwnd = self.win.winfo_id()
-
-        GWL_EXSTYLE       = -20
-        WS_EX_LAYERED     = 0x00080000
+        GWL_EXSTYLE      = -20
+        WS_EX_LAYERED    = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
-        LWA_COLORKEY      = 0x00000001
-        MAGENTA_COLORREF  = 0x00FF00FF  # RGB(255, 0, 255) as COLORREF
+        LWA_COLORKEY     = 0x00000001
 
-        # Set LAYERED + TRANSPARENT in one call
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                              style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
-
-        # Directly register the transparent color key — no tkinter wrapper
-        user32.SetLayeredWindowAttributes(hwnd, MAGENTA_COLORREF, 0, LWA_COLORKEY)
+        style = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        u32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                           style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+        # Bypass tkinter wrapper — call Win32 directly with exact COLORREF
+        u32.SetLayeredWindowAttributes(hwnd, _KEY_COLORREF, 0, LWA_COLORKEY)
         self.win.update()
+
+    def _font(self, size: int) -> ImageFont.FreeTypeFont:
+        if size not in self._font_cache:
+            self._font_cache[size] = _find_cjk_font(size)
+        return self._font_cache[size]
 
     def update(self, translations: list[tuple], region: dict):
-        """
-        Position the overlay over `region` and draw each translation.
-        translations: [(bbox, translated_text), ...]
-          bbox = [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] in region-local coords
-        region: {left, top, width, height} — absolute screen coordinates
-        """
         gx, gy = region["left"], region["top"]
         gw, gh = region["width"], region["height"]
 
         self.win.geometry(f"{gw}x{gh}+{gx}+{gy}")
         self.canvas.config(width=gw, height=gh)
-        self.canvas.delete("all")
+
+        # PIL image — background is EXACT keycolor pixels
+        img = Image.new("RGB", (gw, gh), _KEY_RGB)
+        draw = ImageDraw.Draw(img)
 
         for bbox, text in translations:
             if not text or text.startswith("["):
                 continue
             x1, y1 = int(bbox[0][0]), int(bbox[0][1])
             x3, y3 = int(bbox[2][0]), int(bbox[2][1])
-            box_h = max(1, y3 - y1)
-            cx    = (x1 + x3) // 2
-            cy    = (y1 + y3) // 2
-            font_size = max(10, min(20, int(box_h * 0.75)))
+            box_h  = max(1, y3 - y1)
+            cx, cy = (x1 + x3) // 2, (y1 + y3) // 2
+            fsize  = max(11, min(22, int(box_h * 0.75)))
+            font   = self._font(fsize)
 
-            # Draw text first, then fit a tight background box around it
-            tid = self.canvas.create_text(
-                cx, cy,
-                text=text,
-                fill="#ffffff",
-                font=cjk_font(font_size, bold=True),
-                anchor="center",
-                width=x3 - x1,
-            )
-            tb = self.canvas.bbox(tid)   # (x0, y0, x1, y1) of the rendered text
-            if tb:
-                pad = 3
-                bid = self.canvas.create_rectangle(
-                    tb[0] - pad, tb[1] - pad, tb[2] + pad, tb[3] + pad,
-                    fill="#1a1a2e", outline="#4a90d9", width=1,
-                )
-                self.canvas.tag_lower(bid, tid)  # background behind text
+            # Measure rendered text size
+            tb = draw.textbbox((0, 0), text, font=font, anchor="lt")
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            pad = 4
+
+            # Dark background tight around text
+            rx1 = cx - tw // 2 - pad
+            ry1 = cy - th // 2 - pad
+            rx2 = cx + tw // 2 + pad
+            ry2 = cy + th // 2 + pad
+            draw.rectangle([rx1, ry1, rx2, ry2],
+                           fill=_BG_RGB, outline=_BORDER_RGB, width=1)
+
+            # Text
+            draw.text((cx, cy), text,
+                      fill=_TEXT_RGB, font=font, anchor="mm")
+
+        tk_img = ImageTk.PhotoImage(img)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=tk_img)
+        self._img_ref = tk_img   # prevent GC
 
     def clear(self):
         self.canvas.delete("all")
+        self._img_ref = None
 
     def show(self):
         self.win.deiconify()
