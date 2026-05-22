@@ -1,24 +1,64 @@
 import cv2
 import numpy as np
+import sys
 
 
 class OCREngine:
     def __init__(self):
         self._reader = None
+        self._langs = ["ko"]          # default: Korean only
+        self._use_hanzi = False
+
+    def set_hanzi(self, enabled: bool):
+        """Enable/disable Chinese character (漢字) recognition.
+        Requires an extra ~200MB model download on first use.
+        Resets the reader so it reloads on next use.
+        """
+        langs = ["ko", "ch_sim"] if enabled else ["ko"]
+        if langs != self._langs:
+            self._langs = langs
+            self._reader = None   # force reload with new language list
+            self._use_hanzi = enabled
 
     def _ensure_loaded(self, log_cb=None):
         if self._reader is not None:
             return
+
+        langs_str = " + 漢字(ch_sim)" if "ch_sim" in self._langs else ""
         if log_cb:
-            log_cb("正在載入 OCR 模型（首次需要下載，請稍候）...")
+            log_cb(f"正在載入 OCR 模型 [韓文{langs_str}]（首次需下載，請稍候）...")
+
         import easyocr
-        # ch_sim enables Chinese character (漢字) recognition used in TR quizzes
-        self._reader = easyocr.Reader(["ko", "ch_sim"], gpu=False, verbose=False)
+
+        # Intercept stdout so EasyOCR's tqdm download bars appear in our log
+        class _LogCapture:
+            def __init__(self, cb):
+                self._cb = cb
+                self._buf = ""
+            def write(self, s):
+                self._buf += s
+                if "\n" in self._buf:
+                    lines = self._buf.split("\n")
+                    for line in lines[:-1]:
+                        line = line.strip()
+                        if line and self._cb:
+                            self._cb(f"[下載] {line}")
+                    self._buf = lines[-1]
+            def flush(self):
+                pass
+
+        old_stdout = sys.stdout
+        if log_cb:
+            sys.stdout = _LogCapture(log_cb)
+        try:
+            self._reader = easyocr.Reader(self._langs, gpu=False, verbose=True)
+        finally:
+            sys.stdout = old_stdout
+
         if log_cb:
             log_cb("OCR 模型載入完成。")
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
-        """Plain text extraction (for floating panel mode)."""
         self._ensure_loaded(log_cb)
         processed = _preprocess_for_ocr(img_bgr)
         results = self._reader.readtext(
@@ -28,10 +68,6 @@ class OCREngine:
         return "\n".join(results).strip()
 
     def extract_with_boxes(self, img_bgr: np.ndarray, log_cb=None) -> list[tuple]:
-        """
-        Return [(bbox, text), ...] with bboxes in original image coordinates.
-        Uses the original image (not scaled) so bboxes match screen pixels.
-        """
         self._ensure_loaded(log_cb)
         processed = _preprocess_for_ocr(img_bgr, scale=False)
         results = self._reader.readtext(
@@ -42,28 +78,19 @@ class OCREngine:
 
 
 def _preprocess_for_ocr(img_bgr: np.ndarray, scale: bool = True) -> np.ndarray:
-    """
-    Preprocess for game OCR.
-    Key insight: Tales Runner quizzes/chalkboards use WHITE text on DARK backgrounds.
-    We auto-detect and invert so EasyOCR always sees dark text on light background.
-    """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # Auto-invert: if average pixel < 128 the background is dark (e.g. chalkboard)
-    # EasyOCR performs significantly better with dark-text-on-light-background
+    # Auto-invert dark backgrounds (chalkboard quiz screens = white text on dark green)
     if np.mean(gray) < 128:
         gray = cv2.bitwise_not(gray)
 
-    # CLAHE: adaptive contrast — helps separate text from textured backgrounds
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
     gray = clahe.apply(gray)
 
-    # Sharpen to make glyph edges crisper
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
     gray = cv2.filter2D(gray, -1, kernel)
     gray = np.clip(gray, 0, 255).astype(np.uint8)
 
-    # Scale up small captures so text height ≥ 32px
     if scale:
         h, w = gray.shape
         if h < 100:

@@ -163,6 +163,17 @@ class TRTransApp:
 
         self._on_backend_change()  # set initial enabled state
 
+        # ── OCR settings ────────────────────────────────────────────────
+        sec_ocr = self._section(content, "OCR 設定")
+        self._hanzi_var = tk.BooleanVar(value=self.config.get("ocr_hanzi", False))
+        tk.Checkbutton(
+            sec_ocr,
+            text="啟用漢字識別（ch_sim，首次多下載 ~200MB，適合含漢字題目的遊戲模式）",
+            variable=self._hanzi_var,
+            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+            activebackground=self.BG, font=cjk_font(9),
+        ).pack(anchor="w")
+
         # ── Settings ────────────────────────────────────────────────────
         sec3 = self._section(content, "其他設定")
         settings_grid = tk.Frame(sec3, bg=self.BG)
@@ -308,6 +319,9 @@ class TRTransApp:
             if self.game_overlay and self.game_overlay.exists():
                 self.game_overlay.hide()
 
+        # Apply current OCR hanzi setting before starting
+        self.ocr.set_hanzi(self.config.get("ocr_hanzi", False))
+
         self.running = True
         self._set_status(True)
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -337,6 +351,11 @@ class TRTransApp:
         self.config.set("translation_backend", self._backend_var.get())
         self.config.set("deepseek_api_key", self._apikey_var.get().strip())
         self.config.set("deepseek_model", self._model_var.get().strip() or "deepseek-v4-flash")
+        hanzi = self._hanzi_var.get()
+        self.config.set("ocr_hanzi", hanzi)
+        self.ocr.set_hanzi(hanzi)
+        if not hanzi:
+            self._ocr_ready = False  # reload without ch_sim next start
         self.translator.update_config(self.config)
         if self.overlay and self.overlay.win.winfo_exists():
             self.overlay.win.attributes("-alpha", self._alpha_var.get())

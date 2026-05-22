@@ -7,6 +7,7 @@ DEFAULTS = {
     "capture_region": None,
     "window_title": None,
     "mode": "inplace",
+    "ocr_hanzi": False,
     "translation_backend": "google",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-v4-flash",
