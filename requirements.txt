@@ -1,0 +1,6 @@
+mss>=9.0.1
+easyocr>=1.7.1
+deep-translator>=1.11.4
+Pillow>=10.3.0
+numpy>=1.26.0
+opencv-python-headless>=4.9.0

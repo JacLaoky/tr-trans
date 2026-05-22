@@ -1,0 +1,350 @@
+"""
+TR Trans - 韓服 Tales Runner 實時翻譯器
+Run: python main.py
+"""
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
+import time
+import sys
+
+from config import Config
+from capture import ScreenCapture
+from ocr import OCREngine
+from translator import TranslationEngine
+from overlay import TranslationOverlay
+from region_selector import select_region
+from utils import cjk_font
+
+
+class TRTransApp:
+    # UI colors
+    BG = "#1e1e2e"
+    BG2 = "#2a2a3e"
+    FG = "#cdd6f4"
+    ACCENT = "#4a90d9"
+    GREEN = "#a6e3a1"
+    RED = "#f38ba8"
+    YELLOW = "#f9e2af"
+
+    def __init__(self):
+        self.config = Config()
+        self.capture = ScreenCapture()
+        self.ocr = OCREngine()
+        self.translator = TranslationEngine(
+            source=self.config.get("translation_source"),
+            target=self.config.get("translation_target"),
+        )
+        self.overlay: TranslationOverlay | None = None
+
+        self.running = False
+        self._thread: threading.Thread | None = None
+        self._last_text = ""
+        self._ocr_ready = False
+
+        self.root = tk.Tk()
+        self._build_ui()
+
+    # ------------------------------------------------------------------ #
+    # UI                                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _build_ui(self):
+        self.root.title("TR Trans - 韓服翻譯器")
+        self.root.geometry("480x520")
+        self.root.resizable(False, False)
+        self.root.configure(bg=self.BG)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
+
+        self._apply_styles()
+
+        # ── Header ──────────────────────────────────────────────────────
+        hdr = tk.Frame(self.root, bg=self.ACCENT, height=40)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        tk.Label(
+            hdr, text="  TR Trans  |  Tales Runner 韓服翻譯器",
+            bg=self.ACCENT, fg="white",
+            font=cjk_font(12, bold=True), anchor="w",
+        ).pack(fill=tk.BOTH, expand=True, padx=4)
+
+        content = tk.Frame(self.root, bg=self.BG, padx=12, pady=10)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # ── Region ──────────────────────────────────────────────────────
+        sec1 = self._section(content, "擷取區域")
+        self._region_var = tk.StringVar(value="尚未設定")
+        tk.Label(
+            sec1, textvariable=self._region_var,
+            bg=self.BG2, fg=self.YELLOW,
+            font=("Consolas", 9), anchor="w", padx=6,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        tk.Button(
+            sec1, text="選擇區域", command=self._select_region,
+            **self._btn_style(),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        self._restore_region_label()
+
+        # ── Controls ────────────────────────────────────────────────────
+        sec2 = self._section(content, "控制")
+        self._start_btn = tk.Button(
+            sec2, text="▶  開始翻譯", command=self._toggle,
+            **self._btn_style(width=14),
+        )
+        self._start_btn.pack(side=tk.LEFT)
+
+        self._status_dot = tk.Label(sec2, text="●", fg=self.RED, bg=self.BG, font=("Arial", 14))
+        self._status_dot.pack(side=tk.LEFT, padx=8)
+        self._status_lbl = tk.Label(sec2, text="停止中", bg=self.BG, fg=self.FG,
+                                    font=cjk_font(10))
+        self._status_lbl.pack(side=tk.LEFT)
+
+        # ── Settings ────────────────────────────────────────────────────
+        sec3 = self._section(content, "設定")
+        settings_grid = tk.Frame(sec3, bg=self.BG)
+        settings_grid.pack(fill=tk.X)
+
+        # Capture interval
+        tk.Label(settings_grid, text="擷取間隔 (秒):", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=0, column=0, sticky="w", pady=3)
+        self._interval_var = tk.DoubleVar(value=self.config.get("capture_interval"))
+        interval_spin = tk.Spinbox(
+            settings_grid, from_=0.2, to=5.0, increment=0.1,
+            textvariable=self._interval_var, width=6,
+            bg=self.BG2, fg=self.FG, buttonbackground=self.BG2,
+            relief=tk.FLAT, font=("Consolas", 10),
+            command=lambda: self.config.set("capture_interval", self._interval_var.get()),
+        )
+        interval_spin.grid(row=0, column=1, sticky="w", padx=8)
+
+        # Font size
+        tk.Label(settings_grid, text="浮窗字體大小:", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=1, column=0, sticky="w", pady=3)
+        self._fontsize_var = tk.IntVar(value=self.config.get("overlay_font_size"))
+        font_spin = tk.Spinbox(
+            settings_grid, from_=10, to=24, increment=1,
+            textvariable=self._fontsize_var, width=6,
+            bg=self.BG2, fg=self.FG, buttonbackground=self.BG2,
+            relief=tk.FLAT, font=("Consolas", 10),
+        )
+        font_spin.grid(row=1, column=1, sticky="w", padx=8)
+
+        # Overlay opacity
+        tk.Label(settings_grid, text="浮窗透明度:", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=2, column=0, sticky="w", pady=3)
+        self._alpha_var = tk.DoubleVar(value=self.config.get("overlay_alpha"))
+        alpha_scale = tk.Scale(
+            settings_grid, from_=0.3, to=1.0, resolution=0.05,
+            variable=self._alpha_var, orient=tk.HORIZONTAL, length=120,
+            bg=self.BG, fg=self.FG, troughcolor=self.BG2,
+            highlightthickness=0, relief=tk.FLAT,
+        )
+        alpha_scale.grid(row=2, column=1, sticky="w", padx=8)
+
+        tk.Button(
+            sec3, text="套用設定", command=self._apply_settings,
+            **self._btn_style(),
+        ).pack(pady=(8, 0))
+
+        # ── Log ─────────────────────────────────────────────────────────
+        log_frame = tk.LabelFrame(
+            content, text=" 日誌 ",
+            bg=self.BG, fg=self.ACCENT,
+            font=cjk_font(9),
+            labelanchor="nw", bd=1, relief=tk.SOLID,
+        )
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        self._log_text = tk.Text(
+            log_frame, height=7, bg=self.BG2, fg=self.FG,
+            font=("Consolas", 9), relief=tk.FLAT,
+            state=tk.DISABLED, wrap=tk.WORD,
+        )
+        sb = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._log_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self._log("就緒。請先選擇擷取區域，再按「開始翻譯」。")
+
+    # ------------------------------------------------------------------ #
+    # Event handlers                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _select_region(self):
+        if self.running:
+            messagebox.showwarning("提示", "請先停止翻譯再重新選擇區域。")
+            return
+        self._log("正在截圖，請切換到遊戲視窗...")
+        self.root.after(300, self._do_select_region)
+
+    def _do_select_region(self):
+        self.root.withdraw()
+        time.sleep(0.3)
+        try:
+            full = self.capture.capture_full_screen()
+            region = select_region(full)
+            if region:
+                self.config.set("capture_region", region)
+                self._region_var.set(
+                    f"左:{region['left']}  上:{region['top']}  "
+                    f"寬:{region['width']}  高:{region['height']}"
+                )
+                self._log(f"區域已設定: {region}")
+            else:
+                self._log("已取消選取區域。")
+        except Exception as e:
+            self._log(f"選取失敗: {e}")
+        finally:
+            self.root.deiconify()
+
+    def _toggle(self):
+        if self.running:
+            self._stop()
+        else:
+            self._start()
+
+    def _start(self):
+        if not self.config.get("capture_region"):
+            messagebox.showwarning("提示", "請先選擇要擷取的遊戲區域。")
+            return
+
+        # Create overlay if needed
+        if self.overlay is None or not self.overlay.win.winfo_exists():
+            self.overlay = TranslationOverlay(self.config, on_close=self._on_overlay_close)
+
+        self.running = True
+        self._set_status(True)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        self._log("開始翻譯...")
+
+    def _stop(self):
+        self.running = False
+        self._set_status(False)
+        self._log("已停止。")
+
+    def _on_overlay_close(self):
+        self._stop()
+        self.overlay = None
+
+    def _apply_settings(self):
+        self.config.set("overlay_font_size", self._fontsize_var.get())
+        self.config.set("overlay_alpha", self._alpha_var.get())
+        self.config.set("capture_interval", self._interval_var.get())
+        if self.overlay and self.overlay.win.winfo_exists():
+            self.overlay.win.attributes("-alpha", self._alpha_var.get())
+        self._log("設定已套用。")
+
+    def _on_quit(self):
+        self.running = False
+        if self.overlay and self.overlay.win.winfo_exists():
+            self.overlay.win.destroy()
+        self.root.destroy()
+
+    # ------------------------------------------------------------------ #
+    # Translation loop                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _loop(self):
+        # Trigger OCR model load in background on first start
+        if not self._ocr_ready:
+            self.ocr.ocr_engine_instance = None  # reset if needed
+            self.ocr._ensure_loaded(log_cb=self._log_threadsafe)
+            self._ocr_ready = True
+
+        while self.running:
+            try:
+                region = self.config.get("capture_region")
+                if not region:
+                    time.sleep(0.5)
+                    continue
+
+                img = self.capture.capture_region(region)
+                if img is None:
+                    time.sleep(0.2)
+                    continue
+
+                text = self.ocr.extract_text(img)
+                text = text.strip()
+
+                if not text:
+                    time.sleep(self.config.get("capture_interval"))
+                    continue
+
+                if text == self._last_text:
+                    time.sleep(self.config.get("capture_interval"))
+                    continue
+
+                self._last_text = text
+                self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
+
+                translated = self.translator.translate(text)
+                if translated and self.overlay:
+                    self.overlay.win.after(0, lambda t=translated: self.overlay.update_text(t))
+                    self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
+
+            except Exception as e:
+                self._log_threadsafe(f"錯誤: {e}")
+
+            time.sleep(self.config.get("capture_interval"))
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _set_status(self, active: bool):
+        if active:
+            self._status_dot.config(fg=self.GREEN)
+            self._status_lbl.config(text="翻譯中...")
+            self._start_btn.config(text="■  停止")
+        else:
+            self._status_dot.config(fg=self.RED)
+            self._status_lbl.config(text="停止中")
+            self._start_btn.config(text="▶  開始翻譯")
+
+    def _log(self, msg: str):
+        self._log_text.config(state=tk.NORMAL)
+        self._log_text.insert(tk.END, msg + "\n")
+        self._log_text.see(tk.END)
+        self._log_text.config(state=tk.DISABLED)
+
+    def _log_threadsafe(self, msg: str):
+        self.root.after(0, lambda: self._log(msg))
+
+    def _restore_region_label(self):
+        r = self.config.get("capture_region")
+        if r:
+            self._region_var.set(
+                f"左:{r['left']}  上:{r['top']}  寬:{r['width']}  高:{r['height']}"
+            )
+
+    def _section(self, parent, title: str) -> tk.Frame:
+        tk.Label(
+            parent, text=title, bg=self.BG, fg=self.ACCENT,
+            font=cjk_font(10, bold=True),
+        ).pack(anchor="w", pady=(8, 2))
+        f = tk.Frame(parent, bg=self.BG)
+        f.pack(fill=tk.X)
+        return f
+
+    def _btn_style(self, width: int = 10) -> dict:
+        return dict(
+            bg=self.ACCENT, fg="white", relief=tk.FLAT,
+            font=cjk_font(10), cursor="hand2",
+            padx=8, pady=4, width=width,
+            activebackground="#357abd", activeforeground="white",
+        )
+
+    def _apply_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Vertical.TScrollbar", background=self.BG2, troughcolor=self.BG, borderwidth=0)
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    app = TRTransApp()
+    app.run()
