@@ -6,6 +6,7 @@ CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 DEFAULTS = {
     "capture_region": None,
     "window_title": None,
+    "mode": "inplace",
     "capture_interval": 0.8,
     "translation_source": "ko",
     "translation_target": "zh-TW",

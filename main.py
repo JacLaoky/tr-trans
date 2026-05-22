@@ -13,6 +13,7 @@ from capture import ScreenCapture
 from ocr import OCREngine
 from translator import TranslationEngine
 from overlay import TranslationOverlay
+from game_overlay import GameOverlay
 from region_selector import select_region
 from window_picker import pick_window
 from utils import cjk_font
@@ -37,11 +38,13 @@ class TRTransApp:
             target=self.config.get("translation_target"),
         )
         self.overlay: TranslationOverlay | None = None
+        self.game_overlay: GameOverlay | None = None
 
         self.running = False
         self._thread: threading.Thread | None = None
         self._last_text = ""
         self._ocr_ready = False
+        self._mode = tk.StringVar(value=self.config.get("mode", "inplace"))
 
         self.root = tk.Tk()
         self._build_ui()
@@ -89,6 +92,21 @@ class TRTransApp:
             **self._btn_style(),
         ).pack(side=tk.RIGHT, padx=(6, 0))
         self._restore_region_label()
+
+        # ── Mode ────────────────────────────────────────────────────────
+        sec_mode = self._section(content, "翻譯模式")
+        tk.Radiobutton(
+            sec_mode, text="覆蓋原文位置", variable=self._mode, value="inplace",
+            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+            activebackground=self.BG, font=cjk_font(10),
+            command=self._on_mode_change,
+        ).pack(side=tk.LEFT)
+        tk.Radiobutton(
+            sec_mode, text="浮窗面板", variable=self._mode, value="panel",
+            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+            activebackground=self.BG, font=cjk_font(10),
+            command=self._on_mode_change,
+        ).pack(side=tk.LEFT, padx=(16, 0))
 
         # ── Controls ────────────────────────────────────────────────────
         sec2 = self._section(content, "控制")
@@ -221,24 +239,39 @@ class TRTransApp:
         else:
             self._start()
 
+    def _on_mode_change(self):
+        self.config.set("mode", self._mode.get())
+        if self.running:
+            self._stop()
+
     def _start(self):
         if not self.config.get("window_title") and not self.config.get("capture_region"):
             messagebox.showwarning("提示", "請先選擇視窗或手動框選擷取區域。")
             return
 
-        # Create overlay if needed
-        if self.overlay is None or not self.overlay.win.winfo_exists():
-            self.overlay = TranslationOverlay(self.config, on_close=self._on_overlay_close)
+        mode = self._mode.get()
+        if mode == "inplace":
+            if self.game_overlay is None or not self.game_overlay.exists():
+                self.game_overlay = GameOverlay()
+            if self.overlay and self.overlay.win.winfo_exists():
+                self.overlay.win.withdraw()
+        else:
+            if self.overlay is None or not self.overlay.win.winfo_exists():
+                self.overlay = TranslationOverlay(self.config, on_close=self._on_overlay_close)
+            if self.game_overlay and self.game_overlay.exists():
+                self.game_overlay.hide()
 
         self.running = True
         self._set_status(True)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self._log("開始翻譯...")
+        self._log(f"開始翻譯（{'覆蓋模式' if mode == 'inplace' else '浮窗模式'}）...")
 
     def _stop(self):
         self.running = False
         self._set_status(False)
+        if self.game_overlay and self.game_overlay.exists():
+            self.root.after(0, self.game_overlay.clear)
         self._log("已停止。")
 
     def _on_overlay_close(self):
@@ -257,6 +290,8 @@ class TRTransApp:
         self.running = False
         if self.overlay and self.overlay.win.winfo_exists():
             self.overlay.win.destroy()
+        if self.game_overlay and self.game_overlay.exists():
+            self.game_overlay.destroy()
         self.root.destroy()
 
     # ------------------------------------------------------------------ #
@@ -289,29 +324,52 @@ class TRTransApp:
                         time.sleep(0.2)
                         continue
 
-                text = self.ocr.extract_text(img)
-                text = text.strip()
-
-                if not text:
-                    time.sleep(self.config.get("capture_interval"))
-                    continue
-
-                if text == self._last_text:
-                    time.sleep(self.config.get("capture_interval"))
-                    continue
-
-                self._last_text = text
-                self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
-
-                translated = self.translator.translate(text)
-                if translated and self.overlay:
-                    self.overlay.win.after(0, lambda t=translated: self.overlay.update_text(t))
-                    self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
+                if self._mode.get() == "inplace":
+                    self._process_inplace(img, region)
+                else:
+                    self._process_panel(img)
 
             except Exception as e:
                 self._log_threadsafe(f"錯誤: {e}")
 
             time.sleep(self.config.get("capture_interval"))
+
+    def _process_inplace(self, img, region):
+        """OCR with bboxes → translate each item → update game overlay."""
+        items = self.ocr.extract_with_boxes(img)
+        if not items:
+            if self.game_overlay and self.game_overlay.exists():
+                self.root.after(0, self.game_overlay.clear)
+            return
+
+        flat = " ".join(t for _, t in items)
+        if flat == self._last_text:
+            return
+        self._last_text = flat
+        self._log_threadsafe(f"[OCR] {flat[:60]}{'…' if len(flat) > 60 else ''}")
+
+        translated_items = [(bbox, self.translator.translate(text)) for bbox, text in items]
+
+        if self.game_overlay and self.game_overlay.exists():
+            self.root.after(
+                0, lambda ti=translated_items, r=region:
+                self.game_overlay.update(ti, r)
+            )
+        first = translated_items[0][1] if translated_items else ""
+        self._log_threadsafe(f"[翻] {first[:60]}{'…' if len(first) > 60 else ''}")
+
+    def _process_panel(self, img):
+        """Plain OCR → translate → update floating panel."""
+        text = self.ocr.extract_text(img).strip()
+        if not text or text == self._last_text:
+            return
+        self._last_text = text
+        self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
+
+        translated = self.translator.translate(text)
+        if translated and self.overlay:
+            self.overlay.win.after(0, lambda t=translated: self.overlay.update_text(t))
+            self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
