@@ -179,9 +179,25 @@ class GameOverlay:
         gw, gh = region["width"], region["height"]
         self._last_region = region
 
+        # ── DEBUG: force a minimum size so the overlay is unmissable ─────
+        # Remove these two lines once visibility is confirmed.
+        gw = max(gw, 320)
+        gh = max(gh, 80)
+        # ─────────────────────────────────────────────────────────────────
+
         # Fully transparent canvas — only drawn boxes will be visible
         img  = Image.new("RGBA", (gw, gh), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
+
+        # ── DEBUG: bright green border + label so we know the overlay exists
+        draw.rectangle([0, 0, gw-1, gh-1], outline=(0, 255, 0, 255), width=3)
+        draw.rectangle([3, 3, gw-4, gh-4], fill=(0, 180, 0, 120))
+        try:
+            dbg_font = self._font(14)
+            draw.text((6, 6), "OVERLAY OK", fill=(255, 255, 0, 255), font=dbg_font)
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────
 
         for bbox, text in translations:
             if not text or text.startswith("["):
