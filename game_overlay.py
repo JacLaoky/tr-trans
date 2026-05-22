@@ -5,8 +5,7 @@ translated text directly over the original Korean text positions.
 import tkinter as tk
 from utils import cjk_font, is_windows
 
-# Magenta as transparent color key — unlikely to appear in Tales Runner
-_TRANSPARENT = "#FF00FF"
+_TRANSPARENT = "#FF00FF"  # Magenta as transparent color key
 
 
 class GameOverlay:
@@ -15,35 +14,54 @@ class GameOverlay:
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg=_TRANSPARENT)
-        self.win.attributes("-transparentcolor", _TRANSPARENT)
 
         self.canvas = tk.Canvas(
             self.win, bg=_TRANSPARENT, highlightthickness=0
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        if is_windows():
-            self._make_clickthrough()
-
-    def _make_clickthrough(self):
-        """Allow mouse clicks to pass through to the game window beneath."""
-        import ctypes
+        # Force window to be mapped before applying Win32 attributes
         self.win.update_idletasks()
+        self.win.update()
+
+        if is_windows():
+            self._setup_windows_overlay()
+        else:
+            # macOS fallback: just use alpha
+            self.win.attributes("-transparentcolor", _TRANSPARENT)
+
+    def _setup_windows_overlay(self):
+        """
+        On Windows, WS_EX_LAYERED must be set via Win32 BEFORE tkinter's
+        -transparentcolor attribute, otherwise the transparent color is ignored
+        and the window renders as a solid black rectangle.
+        """
+        import ctypes
+        user32 = ctypes.windll.user32
+
         hwnd = self.win.winfo_id()
-        GWL_EXSTYLE = -20
+        GWL_EXSTYLE   = -20
+        WS_EX_LAYERED    = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ctypes.windll.user32.SetWindowLongW(
-            hwnd, GWL_EXSTYLE, style | WS_EX_TRANSPARENT | WS_EX_LAYERED
-        )
+
+        # Step 1: add LAYERED flag via Win32
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        self.win.update()
+
+        # Step 2: now tkinter's transparentcolor will actually work
+        self.win.attributes("-transparentcolor", _TRANSPARENT)
+        self.win.update()
+
+        # Step 3: also add TRANSPARENT so clicks pass through to the game
+        style2 = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style2 | WS_EX_TRANSPARENT)
 
     def update(self, translations: list[tuple], region: dict):
         """
         Position the overlay over `region` and draw each translation.
-
         translations: [(bbox, translated_text), ...]
-          bbox: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] in region-local coords
+          bbox = [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] in region-local coords
         region: {left, top, width, height} — absolute screen coordinates
         """
         gx, gy = region["left"], region["top"]
@@ -60,13 +78,12 @@ class GameOverlay:
             x3, y3 = int(bbox[2][0]), int(bbox[2][1])
             box_h = max(1, y3 - y1)
 
-            # Cover original Korean text
+            # Cover original Korean text with a dark box
             self.canvas.create_rectangle(
                 x1, y1, x3, y3,
                 fill="#1a1a2e", outline="#4a90d9", width=1,
             )
 
-            # Draw translated text, scaling font to fit the box height
             font_size = max(9, min(18, int(box_h * 0.72)))
             self.canvas.create_text(
                 (x1 + x3) // 2, (y1 + y3) // 2,
@@ -74,7 +91,7 @@ class GameOverlay:
                 fill="#e0e0ff",
                 font=cjk_font(font_size),
                 anchor="center",
-                width=x3 - x1,  # wrap if needed
+                width=x3 - x1,
             )
 
     def clear(self):
