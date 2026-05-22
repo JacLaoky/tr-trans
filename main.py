@@ -55,8 +55,9 @@ class TRTransApp:
 
     def _build_ui(self):
         self.root.title("TR Trans - 韓服翻譯器")
-        self.root.geometry("480x520")
-        self.root.resizable(False, False)
+        self.root.geometry("480x580")
+        self.root.resizable(True, True)
+        self.root.minsize(420, 480)
         self.root.configure(bg=self.BG)
         self.root.protocol("WM_DELETE_WINDOW", self._on_quit)
 
