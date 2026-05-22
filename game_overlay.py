@@ -207,15 +207,18 @@ class GameOverlay:
             draw.text((cx, cy), text, fill=_TEXT_RGBA, font=font, anchor="mm")
 
         if is_windows():
-            # Set content + position atomically, then show
             ok = self._ulw(img, gx, gy)
-            self.win.deiconify()
-            # Diagnostic — shows in the console / run.bat window
+            # SW_SHOWNA (8): show at CURRENT position without activating.
+            # MUST NOT use deiconify() — it calls SW_SHOWNORMAL which restores
+            # the window to tkinter's remembered geometry (-9999,-9999), wiping
+            # out the position just set by UpdateLayeredWindow.
+            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 8)
+            # Diagnostic
             first_box = ""
             for bbox, text in translations:
                 if text and not text.startswith("["):
-                    x1,y1 = int(bbox[0][0]), int(bbox[0][1])
-                    x3,y3 = int(bbox[2][0]), int(bbox[2][1])
+                    x1, y1 = int(bbox[0][0]), int(bbox[0][1])
+                    x3, y3 = int(bbox[2][0]), int(bbox[2][1])
                     first_box = f"bbox=({x1},{y1})-({x3},{y3})"
                     break
             print(
@@ -238,10 +241,16 @@ class GameOverlay:
                 self._img_ref = None
 
     def show(self):
-        self.win.deiconify()
+        if is_windows():
+            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 8)  # SW_SHOWNA
+        else:
+            self.win.deiconify()
 
     def hide(self):
-        self.win.withdraw()
+        if is_windows():
+            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 0)  # SW_HIDE
+        else:
+            self.win.withdraw()
 
     def exists(self) -> bool:
         try:
