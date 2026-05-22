@@ -179,25 +179,28 @@ class GameOverlay:
         gw, gh = region["width"], region["height"]
         self._last_region = region
 
-        # ── DEBUG: force a minimum size so the overlay is unmissable ─────
-        # Remove these two lines once visibility is confirmed.
-        gw = max(gw, 320)
-        gh = max(gh, 80)
+        # ── DEBUG: draw a test rectangle at screen (0,0) — top-left corner ─
+        # If this appears, the overlay works and the issue is z-order/DPI.
+        # If this does NOT appear, there is a more fundamental window issue.
+        _dbg_w, _dbg_h = 480, 120
+        _dbg_img = Image.new("RGBA", (_dbg_w, _dbg_h), (0, 0, 0, 0))
+        _dbg_draw = ImageDraw.Draw(_dbg_img)
+        _dbg_draw.rectangle([0, 0, _dbg_w-1, _dbg_h-1], fill=(220, 0, 0, 230))
+        _dbg_draw.rectangle([4, 4, _dbg_w-5, _dbg_h-5], outline=(255, 255, 0, 255), width=3)
+        try:
+            _dbg_draw.text((12, 12), "OVERLAY TEST — if you see this, overlay works",
+                           fill=(255, 255, 255, 255), font=self._font(14))
+            _dbg_draw.text((12, 40), f"game win=({gx},{gy}) {gw}x{gh}",
+                           fill=(255, 255, 200, 255), font=self._font(12))
+        except Exception:
+            pass
+        self._ulw(_dbg_img, 0, 0)  # ← FIXED top-left corner, unrelated to game
+        import time as _t; _t.sleep(3)   # hold for 3 s so you can see it
         # ─────────────────────────────────────────────────────────────────
 
         # Fully transparent canvas — only drawn boxes will be visible
         img  = Image.new("RGBA", (gw, gh), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-
-        # ── DEBUG: bright green border + label so we know the overlay exists
-        draw.rectangle([0, 0, gw-1, gh-1], outline=(0, 255, 0, 255), width=3)
-        draw.rectangle([3, 3, gw-4, gh-4], fill=(0, 180, 0, 120))
-        try:
-            dbg_font = self._font(14)
-            draw.text((6, 6), "OVERLAY OK", fill=(255, 255, 0, 255), font=dbg_font)
-        except Exception:
-            pass
-        # ─────────────────────────────────────────────────────────────────
 
         for bbox, text in translations:
             if not text or text.startswith("["):
