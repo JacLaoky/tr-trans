@@ -444,6 +444,9 @@ class TRTransApp:
         if not items:
             self._no_text_count += 1
             self._pending_count = 0
+            # Log the first empty frame, then every 5th, so user can see loop is alive
+            if self._no_text_count == 1 or self._no_text_count % 5 == 0:
+                self._log_threadsafe(f"[擷取] 未偵測到文字（第 {self._no_text_count} 幀）")
             # Clear overlay only after 3 consecutive empty frames (avoids flicker)
             if self._no_text_count >= 3 and self.game_overlay and self.game_overlay.exists():
                 self.root.after(0, self.game_overlay.clear)
@@ -451,18 +454,25 @@ class TRTransApp:
 
         self._no_text_count = 0
         flat = " ".join(t for _, t in items)
+        self._log_threadsafe(f"[OCR原] ({len(items)}項) {flat[:80]}{'…' if len(flat)>80 else ''}")
 
-        # Stability gate: same text must appear in 2 consecutive frames before translating
+        # Stability gate: disabled for auto-stop mode (user presses start each time,
+        # so the first detected frame is already intentional).
+        # For continuous mode, require 2 identical consecutive frames.
+        threshold = 1 if self.config.get("auto_stop", True) else 2
+
         if flat == self._pending_text:
             self._pending_count += 1
         else:
             self._pending_text = flat
             self._pending_count = 1
 
-        if self._pending_count < 2:
-            return  # wait for next frame to confirm
+        if self._pending_count < threshold:
+            self._log_threadsafe(f"[穩定門] {self._pending_count}/{threshold}，等待下一幀…")
+            return
 
         if flat == self._last_text:
+            self._log_threadsafe("[穩定門] 與上次相同，跳過。")
             return  # already translated this exact content
 
         self._last_text = flat
@@ -488,7 +498,14 @@ class TRTransApp:
         """Plain OCR → stability check → translate → update floating panel."""
         text = self.ocr.extract_text(img).strip()
         if not text:
+            self._no_text_count += 1
+            if self._no_text_count == 1 or self._no_text_count % 5 == 0:
+                self._log_threadsafe(f"[擷取] 未偵測到文字（第 {self._no_text_count} 幀）")
             return
+
+        self._no_text_count = 0
+        self._log_threadsafe(f"[OCR原] {text[:80]}{'…' if len(text)>80 else ''}")
+        threshold = 1 if self.config.get("auto_stop", True) else 2
 
         if text == self._pending_text:
             self._pending_count += 1
@@ -496,7 +513,7 @@ class TRTransApp:
             self._pending_text = text
             self._pending_count = 1
 
-        if self._pending_count < 2 or text == self._last_text:
+        if self._pending_count < threshold or text == self._last_text:
             return
 
         self._last_text = text
