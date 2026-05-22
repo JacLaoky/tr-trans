@@ -44,9 +44,9 @@ class TRTransApp:
         self._thread: threading.Thread | None = None
         self._last_text = ""
         self._ocr_ready = False
-        self._mode = tk.StringVar(value=self.config.get("mode", "inplace"))
 
         self.root = tk.Tk()
+        self._mode = tk.StringVar(value=self.config.get("mode", "inplace"))
         self._build_ui()
 
     # ------------------------------------------------------------------ #
