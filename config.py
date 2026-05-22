@@ -12,7 +12,7 @@ DEFAULTS = {
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-v4-flash",
     "capture_interval": 0.8,
-    "auto_pause_secs": 5,
+    "auto_stop": True,
     "translation_source": "ko",
     "translation_target": "zh-TW",
     "overlay_alpha": 0.88,

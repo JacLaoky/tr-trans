@@ -180,18 +180,14 @@ class TRTransApp:
         settings_grid = tk.Frame(sec3, bg=self.BG)
         settings_grid.pack(fill=tk.X)
 
-        # Auto-pause
-        tk.Label(settings_grid, text="翻譯後自動暫停 (秒):", bg=self.BG, fg=self.FG,
-                 font=cjk_font(10)).grid(row=0, column=0, sticky="w", pady=3)
-        self._autopause_var = tk.IntVar(value=self.config.get("auto_pause_secs", 5))
-        tk.Spinbox(
-            settings_grid, from_=0, to=30, increment=1,
-            textvariable=self._autopause_var, width=6,
-            bg=self.BG2, fg=self.FG, buttonbackground=self.BG2,
-            relief=tk.FLAT, font=("Consolas", 10),
-        ).grid(row=0, column=1, sticky="w", padx=8)
-        tk.Label(settings_grid, text="（0 = 不自動暫停）", bg=self.BG, fg="#888899",
-                 font=cjk_font(8)).grid(row=0, column=2, sticky="w")
+        # Auto-stop
+        self._autostop_var = tk.BooleanVar(value=self.config.get("auto_stop", True))
+        tk.Checkbutton(
+            settings_grid, text="翻譯成功後自動停止（再按「開始翻譯」繼續下一題）",
+            variable=self._autostop_var,
+            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+            activebackground=self.BG, font=cjk_font(10),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=3)
 
         # Capture interval
         tk.Label(settings_grid, text="擷取間隔 (秒):", bg=self.BG, fg=self.FG,
@@ -365,7 +361,7 @@ class TRTransApp:
         backend = self._backend_var.get()
         api_key = self._apikey_var.get().strip()
         model   = self._model_var.get().strip() or "deepseek-v4-flash"
-        self.config.set("auto_pause_secs", self._autopause_var.get())
+        self.config.set("auto_stop", self._autostop_var.get())
         self.config.set("translation_backend", backend)
         self.config.set("deepseek_api_key", api_key)
         self.config.set("deepseek_model", model)
@@ -434,14 +430,6 @@ class TRTransApp:
                 else:
                     self._process_panel(img)
 
-                # Auto-pause: if text has been stable for N seconds, stop
-                pause_secs = self.config.get("auto_pause_secs", 0)
-                if pause_secs > 0 and self._last_new_text_time > 0:
-                    idle = time.time() - self._last_new_text_time
-                    if idle >= pause_secs:
-                        self._log_threadsafe(f"已靜止 {pause_secs} 秒，自動暫停。按「開始翻譯」繼續。")
-                        self.root.after(0, self._stop)
-                        return
 
             except Exception as e:
                 import traceback
@@ -493,6 +481,8 @@ class TRTransApp:
                 self.game_overlay.update(ti, r)
             )
         self._log_threadsafe(f"[翻] {translated[0][:60]}{'…' if len(translated[0]) > 60 else ''}")
+        if self.config.get("auto_stop", True):
+            self.root.after(0, self._stop)
 
     def _process_panel(self, img):
         """Plain OCR → stability check → translate → update floating panel."""
@@ -517,6 +507,8 @@ class TRTransApp:
         if translated and self.overlay:
             self.overlay.win.after(0, lambda t=translated, o=text: self.overlay.update_text(t, o))
             self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
+        if self.config.get("auto_stop", True):
+            self.root.after(0, self._stop)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
