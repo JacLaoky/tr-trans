@@ -34,7 +34,7 @@ class OCREngine:
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         gray = cv2.medianBlur(gray, 3)
         results = self._reader.readtext(gray, detail=1, paragraph=False)
-        return [(r[0], r[1]) for r in results if r[2] >= 0.3]
+        return [(r[0], r[1]) for r in results if r[2] >= 0.2]
 
     @staticmethod
     def _preprocess(img_bgr: np.ndarray) -> np.ndarray:

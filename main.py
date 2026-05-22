@@ -164,10 +164,16 @@ class TRTransApp:
         )
         alpha_scale.grid(row=2, column=1, sticky="w", padx=8)
 
+        btn_row = tk.Frame(sec3, bg=self.BG)
+        btn_row.pack(pady=(8, 0), fill=tk.X)
         tk.Button(
-            sec3, text="套用設定", command=self._apply_settings,
+            btn_row, text="套用設定", command=self._apply_settings,
             **self._btn_style(),
-        ).pack(pady=(8, 0))
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            btn_row, text="測試翻譯", command=self._test_translation,
+            **self._btn_style(),
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         # ── Log ─────────────────────────────────────────────────────────
         log_frame = tk.LabelFrame(
@@ -286,6 +292,16 @@ class TRTransApp:
             self.overlay.win.attributes("-alpha", self._alpha_var.get())
         self._log("設定已套用。")
 
+    def _test_translation(self):
+        self._log("測試翻譯中：「안녕하세요」→ ...")
+        def _do():
+            try:
+                result = self.translator.translate("안녕하세요")
+                self._log_threadsafe(f"翻譯成功：「{result}」（網路正常）")
+            except Exception as e:
+                self._log_threadsafe(f"翻譯失敗：{e}（請確認網路連線）")
+        threading.Thread(target=_do, daemon=True).start()
+
     def _on_quit(self):
         self.running = False
         if self.overlay and self.overlay.win.winfo_exists():
@@ -299,11 +315,11 @@ class TRTransApp:
     # ------------------------------------------------------------------ #
 
     def _loop(self):
-        # Trigger OCR model load in background on first start
         if not self._ocr_ready:
-            self.ocr.ocr_engine_instance = None  # reset if needed
             self.ocr._ensure_loaded(log_cb=self._log_threadsafe)
             self._ocr_ready = True
+
+        self._log_threadsafe("OCR 就緒，開始擷取...")
 
         while self.running:
             try:
@@ -321,6 +337,7 @@ class TRTransApp:
                         continue
                     img = self.capture.capture_region(region)
                     if img is None:
+                        self._log_threadsafe("截圖失敗，重試中...")
                         time.sleep(0.2)
                         continue
 
@@ -330,7 +347,8 @@ class TRTransApp:
                     self._process_panel(img)
 
             except Exception as e:
-                self._log_threadsafe(f"錯誤: {e}")
+                import traceback
+                self._log_threadsafe(f"錯誤: {e}\n{traceback.format_exc()[-300:]}")
 
             time.sleep(self.config.get("capture_interval"))
 
@@ -338,6 +356,7 @@ class TRTransApp:
         """OCR with bboxes → translate each item → update game overlay."""
         items = self.ocr.extract_with_boxes(img)
         if not items:
+            self._log_threadsafe("[OCR] 未偵測到文字")
             if self.game_overlay and self.game_overlay.exists():
                 self.root.after(0, self.game_overlay.clear)
             return
