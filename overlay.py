@@ -105,25 +105,37 @@ class TranslationOverlay:
     def update_text(self, translated: str, original: str = ""):
         if not translated:
             return
-        self._history.append(translated)
+        entry = {"tr": translated, "orig": original}
+        self._history.append(entry)
         max_h = self._config.get("history_size")
         if len(self._history) > max_h:
             self._history = self._history[-max_h:]
         self._render()
 
     def _render(self):
+        ORIG_COLOR = "#666688"
+        DIM   = ["#888899", "#aaaacc", "#ccccee"]
+
         self._text.config(state=tk.NORMAL)
         self._text.delete("1.0", tk.END)
-        for i, line in enumerate(self._history):
+
+        for i, entry in enumerate(self._history):
             if i > 0:
                 self._text.insert(tk.END, "\n")
-            # Dim older entries
-            tag = f"line{i}"
-            alpha_map = {0: "#aaaacc", 1: "#bbbbdd", 2: "#ccccee"}
             idx = len(self._history) - 1 - i
-            color = alpha_map.get(idx, self.TEXT_COLOR)
-            self._text.tag_configure(tag, foreground=color)
-            self._text.insert(tk.END, line, tag)
+            tr_color = DIM[min(idx, len(DIM)-1)]
+            tr_tag  = f"tr{i}"
+            orig_tag = f"orig{i}"
+            self._text.tag_configure(tr_tag,   foreground=tr_color)
+            self._text.tag_configure(orig_tag, foreground=ORIG_COLOR,
+                                     font=(cjk_font(self._font.cget("size") - 2)))
+
+            # Translation line
+            self._text.insert(tk.END, entry["tr"], tr_tag)
+            # Original line (dim, smaller) — only show if different from translation
+            if entry.get("orig") and entry["orig"] != entry["tr"]:
+                self._text.insert(tk.END, f"\n  ↑ {entry['orig']}", orig_tag)
+
         self._text.config(state=tk.DISABLED)
         self._text.see(tk.END)
 

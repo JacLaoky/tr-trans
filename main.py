@@ -489,7 +489,7 @@ class TRTransApp:
 
         translated = self.translator.translate_batch([text], log_cb=self._log_threadsafe)[0]
         if translated and self.overlay:
-            self.overlay.win.after(0, lambda t=translated: self.overlay.update_text(t))
+            self.overlay.win.after(0, lambda t=translated, o=text: self.overlay.update_text(t, o))
             self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
 
     # ------------------------------------------------------------------ #

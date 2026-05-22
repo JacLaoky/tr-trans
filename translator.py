@@ -100,27 +100,47 @@ class TranslationEngine:
                 self._model = (self._config.get("deepseek_model", "deepseek-v4-flash")
                                if self._config else "deepseek-v4-flash")
 
-            # Send all texts in one numbered request
-            prompt = "\n".join(f"{i+1}. {t}" for i, t in enumerate(missing_texts))
-            system = (_DEEPSEEK_SYSTEM +
-                      "\n請按相同編號格式輸出繁體中文翻譯，每行一條，格式：「1. 翻譯結果」。")
-            resp = self._ai_client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": prompt},
-                ],
-                max_tokens=512,
-                temperature=0.1,
-            )
-            raw = resp.choices[0].message.content.strip()
-            if log_cb:
-                log_cb(f"[DeepSeek 回應] {raw[:120]}{'…' if len(raw) > 120 else ''}")
-            translated = self._parse_numbered(raw, len(missing_texts))
-            for i, (orig, trans) in enumerate(zip(missing_texts, translated)):
-                if trans and not trans.startswith("["):
-                    self._store(orig, trans)
-                results[missing_idx[i]] = trans or orig
+            if len(missing_texts) == 1:
+                # Single text: send directly, no numbered format
+                resp = self._ai_client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": _DEEPSEEK_SYSTEM},
+                        {"role": "user",   "content": missing_texts[0]},
+                    ],
+                    max_tokens=512,
+                    temperature=0.1,
+                )
+                raw = resp.choices[0].message.content.strip()
+                if log_cb:
+                    log_cb(f"[DeepSeek 回應] {raw[:120]}{'…' if len(raw) > 120 else ''}")
+                if raw:
+                    self._store(missing_texts[0], raw)
+                    results[missing_idx[0]] = raw
+                else:
+                    results[missing_idx[0]] = "[翻譯失敗: 空回應]"
+            else:
+                # Multiple texts: numbered format
+                prompt = "\n".join(f"{i+1}. {t}" for i, t in enumerate(missing_texts))
+                system = (_DEEPSEEK_SYSTEM +
+                          "\n請按相同編號格式輸出繁體中文翻譯，每行一條，格式：「1. 翻譯結果」。")
+                resp = self._ai_client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    max_tokens=512,
+                    temperature=0.1,
+                )
+                raw = resp.choices[0].message.content.strip()
+                if log_cb:
+                    log_cb(f"[DeepSeek 回應] {raw[:120]}{'…' if len(raw) > 120 else ''}")
+                translated = self._parse_numbered(raw, len(missing_texts))
+                for i, (orig, trans) in enumerate(zip(missing_texts, translated)):
+                    if trans and not trans.startswith("["):
+                        self._store(orig, trans)
+                    results[missing_idx[i]] = trans if trans else "[翻譯失敗]"
 
         except Exception as e:
             err = f"[DeepSeek 失敗: {e}]"
