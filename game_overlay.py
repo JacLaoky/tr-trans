@@ -207,12 +207,7 @@ class GameOverlay:
             draw.text((cx, cy), text, fill=_TEXT_RGBA, font=font, anchor="mm")
 
         if is_windows():
-            ok = self._ulw(img, gx, gy)
-            # SW_SHOWNA (8): show at CURRENT position without activating.
-            # MUST NOT use deiconify() — it calls SW_SHOWNORMAL which restores
-            # the window to tkinter's remembered geometry (-9999,-9999), wiping
-            # out the position just set by UpdateLayeredWindow.
-            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 8)
+            ok = self._ulw(img, gx, gy)  # positions, renders, and shows in one path
             # Diagnostic
             first_box = ""
             for bbox, text in translations:
@@ -242,13 +237,24 @@ class GameOverlay:
 
     def show(self):
         if is_windows():
-            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 8)  # SW_SHOWNA
+            u32 = ctypes.windll.user32
+            u32.SetWindowPos.restype  = ctypes.c_bool
+            u32.SetWindowPos.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.UINT,
+            ]
+            u32.SetWindowPos(self.win.winfo_id(), ctypes.c_void_p(-1),
+                             0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
         else:
             self.win.deiconify()
 
     def hide(self):
         if is_windows():
-            ctypes.windll.user32.ShowWindow(self.win.winfo_id(), 0)  # SW_HIDE
+            u32 = ctypes.windll.user32
+            u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            u32.ShowWindow.restype  = ctypes.c_bool
+            u32.ShowWindow(self.win.winfo_id(), 0)  # SW_HIDE
         else:
             self.win.withdraw()
 
@@ -373,6 +379,31 @@ class GameOverlay:
         gdi32.DeleteObject(hbm)
         gdi32.DeleteDC(hdc_mem)
         u32.ReleaseDC(None, hdc_screen)
+
+        # Make visible and re-assert topmost in one atomic call.
+        # Using SetWindowPos instead of ShowWindow because:
+        #   1. SWP_SHOWWINDOW makes it visible without disturbing position
+        #   2. HWND_TOPMOST (-1) beats game windows that also set themselves topmost
+        #   3. Sets argtypes explicitly to avoid 64-bit HWND truncation
+        u32.SetWindowPos.restype  = ctypes.c_bool
+        u32.SetWindowPos.argtypes = [
+            ctypes.c_void_p,  # hwnd
+            ctypes.c_void_p,  # hWndInsertAfter (HWND_TOPMOST = -1)
+            ctypes.c_int, ctypes.c_int,   # x, y  (ignored: SWP_NOMOVE)
+            ctypes.c_int, ctypes.c_int,   # cx, cy (ignored: SWP_NOSIZE)
+            wintypes.UINT,                # uFlags
+        ]
+        SWP_NOSIZE     = 0x0001
+        SWP_NOMOVE     = 0x0002
+        SWP_NOACTIVATE = 0x0010
+        SWP_SHOWWINDOW = 0x0040
+        u32.SetWindowPos(
+            hwnd,
+            ctypes.c_void_p(-1),    # HWND_TOPMOST
+            0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+
         return bool(ok)
 
     # ── macOS / Linux fallback ────────────────────────────────────────────────
