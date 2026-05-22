@@ -47,8 +47,9 @@ class TranslationEngine:
                 log_cb(f"[翻譯引擎] DeepSeek ({self._config.get('deepseek_model', 'deepseek-v4-flash')})")
             return self._batch_deepseek(texts, api_key, log_cb=log_cb)
         else:
+            reason = "backend=google" if backend != "deepseek" else "API Key 空白"
             if log_cb:
-                log_cb("[翻譯引擎] Google Translate")
+                log_cb(f"[翻譯引擎] Google Translate（{reason}）")
             return [self._translate_google(t) for t in texts]
 
     def update_config(self, config):
