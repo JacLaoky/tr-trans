@@ -39,10 +39,11 @@ class TRTransApp:
 
         self.running = False
         self._thread: threading.Thread | None = None
-        self._last_text = ""       # last successfully translated text
-        self._pending_text = ""    # candidate text waiting for stability
-        self._pending_count = 0    # consecutive frames with same text
-        self._no_text_count = 0    # consecutive frames with no text
+        self._last_text = ""
+        self._pending_text = ""
+        self._pending_count = 0
+        self._no_text_count = 0
+        self._last_new_text_time = 0.0   # timestamp of last successful new translation
         self._ocr_ready = False
 
         self.root = tk.Tk()
@@ -179,9 +180,22 @@ class TRTransApp:
         settings_grid = tk.Frame(sec3, bg=self.BG)
         settings_grid.pack(fill=tk.X)
 
+        # Auto-pause
+        tk.Label(settings_grid, text="翻譯後自動暫停 (秒):", bg=self.BG, fg=self.FG,
+                 font=cjk_font(10)).grid(row=0, column=0, sticky="w", pady=3)
+        self._autopause_var = tk.IntVar(value=self.config.get("auto_pause_secs", 5))
+        tk.Spinbox(
+            settings_grid, from_=0, to=30, increment=1,
+            textvariable=self._autopause_var, width=6,
+            bg=self.BG2, fg=self.FG, buttonbackground=self.BG2,
+            relief=tk.FLAT, font=("Consolas", 10),
+        ).grid(row=0, column=1, sticky="w", padx=8)
+        tk.Label(settings_grid, text="（0 = 不自動暫停）", bg=self.BG, fg="#888899",
+                 font=cjk_font(8)).grid(row=0, column=2, sticky="w")
+
         # Capture interval
         tk.Label(settings_grid, text="擷取間隔 (秒):", bg=self.BG, fg=self.FG,
-                 font=cjk_font(10)).grid(row=0, column=0, sticky="w", pady=3)
+                 font=cjk_font(10)).grid(row=1, column=0, sticky="w", pady=3)
         self._interval_var = tk.DoubleVar(value=self.config.get("capture_interval"))
         interval_spin = tk.Spinbox(
             settings_grid, from_=0.2, to=5.0, increment=0.1,
@@ -190,11 +204,11 @@ class TRTransApp:
             relief=tk.FLAT, font=("Consolas", 10),
             command=lambda: self.config.set("capture_interval", self._interval_var.get()),
         )
-        interval_spin.grid(row=0, column=1, sticky="w", padx=8)
+        interval_spin.grid(row=1, column=1, sticky="w", padx=8)
 
         # Font size
         tk.Label(settings_grid, text="浮窗字體大小:", bg=self.BG, fg=self.FG,
-                 font=cjk_font(10)).grid(row=1, column=0, sticky="w", pady=3)
+                 font=cjk_font(10)).grid(row=2, column=0, sticky="w", pady=3)
         self._fontsize_var = tk.IntVar(value=self.config.get("overlay_font_size"))
         font_spin = tk.Spinbox(
             settings_grid, from_=10, to=24, increment=1,
@@ -202,11 +216,11 @@ class TRTransApp:
             bg=self.BG2, fg=self.FG, buttonbackground=self.BG2,
             relief=tk.FLAT, font=("Consolas", 10),
         )
-        font_spin.grid(row=1, column=1, sticky="w", padx=8)
+        font_spin.grid(row=2, column=1, sticky="w", padx=8)
 
         # Overlay opacity
         tk.Label(settings_grid, text="浮窗透明度:", bg=self.BG, fg=self.FG,
-                 font=cjk_font(10)).grid(row=2, column=0, sticky="w", pady=3)
+                 font=cjk_font(10)).grid(row=3, column=0, sticky="w", pady=3)
         self._alpha_var = tk.DoubleVar(value=self.config.get("overlay_alpha"))
         alpha_scale = tk.Scale(
             settings_grid, from_=0.3, to=1.0, resolution=0.05,
@@ -214,7 +228,7 @@ class TRTransApp:
             bg=self.BG, fg=self.FG, troughcolor=self.BG2,
             highlightthickness=0, relief=tk.FLAT,
         )
-        alpha_scale.grid(row=2, column=1, sticky="w", padx=8)
+        alpha_scale.grid(row=3, column=1, sticky="w", padx=8)
 
         btn_row = tk.Frame(sec3, bg=self.BG)
         btn_row.pack(pady=(8, 0), fill=tk.X)
@@ -351,6 +365,7 @@ class TRTransApp:
         backend = self._backend_var.get()
         api_key = self._apikey_var.get().strip()
         model   = self._model_var.get().strip() or "deepseek-v4-flash"
+        self.config.set("auto_pause_secs", self._autopause_var.get())
         self.config.set("translation_backend", backend)
         self.config.set("deepseek_api_key", api_key)
         self.config.set("deepseek_model", model)
@@ -419,6 +434,15 @@ class TRTransApp:
                 else:
                     self._process_panel(img)
 
+                # Auto-pause: if text has been stable for N seconds, stop
+                pause_secs = self.config.get("auto_pause_secs", 0)
+                if pause_secs > 0 and self._last_new_text_time > 0:
+                    idle = time.time() - self._last_new_text_time
+                    if idle >= pause_secs:
+                        self._log_threadsafe(f"已靜止 {pause_secs} 秒，自動暫停。按「開始翻譯」繼續。")
+                        self.root.after(0, self._stop)
+                        return
+
             except Exception as e:
                 import traceback
                 self._log_threadsafe(f"錯誤: {e}\n{traceback.format_exc()[-300:]}")
@@ -454,6 +478,7 @@ class TRTransApp:
             return  # already translated this exact content
 
         self._last_text = flat
+        self._last_new_text_time = time.time()
         self._log_threadsafe(f"[OCR] {flat[:60]}{'…' if len(flat) > 60 else ''}")
 
         # Batch translate all bboxes in one API call
@@ -485,6 +510,7 @@ class TRTransApp:
             return
 
         self._last_text = text
+        self._last_new_text_time = time.time()
         self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
 
         translated = self.translator.translate_batch([text], log_cb=self._log_threadsafe)[0]

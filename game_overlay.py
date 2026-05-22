@@ -72,27 +72,32 @@ class GameOverlay:
         self.canvas.delete("all")
 
         for bbox, text in translations:
-            if not text:
+            if not text or text.startswith("["):
                 continue
             x1, y1 = int(bbox[0][0]), int(bbox[0][1])
             x3, y3 = int(bbox[2][0]), int(bbox[2][1])
             box_h = max(1, y3 - y1)
+            cx    = (x1 + x3) // 2
+            cy    = (y1 + y3) // 2
+            font_size = max(10, min(20, int(box_h * 0.75)))
 
-            # Cover original Korean text with a dark box
-            self.canvas.create_rectangle(
-                x1, y1, x3, y3,
-                fill="#1a1a2e", outline="#4a90d9", width=1,
-            )
-
-            font_size = max(9, min(18, int(box_h * 0.72)))
-            self.canvas.create_text(
-                (x1 + x3) // 2, (y1 + y3) // 2,
+            # Draw text first, then fit a tight background box around it
+            tid = self.canvas.create_text(
+                cx, cy,
                 text=text,
-                fill="#e0e0ff",
-                font=cjk_font(font_size),
+                fill="#ffffff",
+                font=cjk_font(font_size, bold=True),
                 anchor="center",
                 width=x3 - x1,
             )
+            tb = self.canvas.bbox(tid)   # (x0, y0, x1, y1) of the rendered text
+            if tb:
+                pad = 3
+                bid = self.canvas.create_rectangle(
+                    tb[0] - pad, tb[1] - pad, tb[2] + pad, tb[3] + pad,
+                    fill="#1a1a2e", outline="#4a90d9", width=1,
+                )
+                self.canvas.tag_lower(bid, tid)  # background behind text
 
     def clear(self):
         self.canvas.delete("all")
