@@ -27,35 +27,35 @@ class GameOverlay:
         if is_windows():
             self._setup_windows_overlay()
         else:
-            # macOS fallback: just use alpha
+            # macOS: tkinter's wrapper works fine here
             self.win.attributes("-transparentcolor", _TRANSPARENT)
 
     def _setup_windows_overlay(self):
         """
-        On Windows, WS_EX_LAYERED must be set via Win32 BEFORE tkinter's
-        -transparentcolor attribute, otherwise the transparent color is ignored
-        and the window renders as a solid black rectangle.
+        Bypass tkinter's -transparentcolor wrapper (unreliable on some Windows
+        configs) and call SetLayeredWindowAttributes directly via ctypes.
+        COLORREF for magenta (#FF00FF): R=255 G=0 B=255 → 0x00FF00FF
         """
         import ctypes
         user32 = ctypes.windll.user32
 
+        self.win.update()
         hwnd = self.win.winfo_id()
-        GWL_EXSTYLE   = -20
-        WS_EX_LAYERED    = 0x00080000
+
+        GWL_EXSTYLE       = -20
+        WS_EX_LAYERED     = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
+        LWA_COLORKEY      = 0x00000001
+        MAGENTA_COLORREF  = 0x00FF00FF  # RGB(255, 0, 255) as COLORREF
 
-        # Step 1: add LAYERED flag via Win32
+        # Set LAYERED + TRANSPARENT in one call
         style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-        self.win.update()
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                              style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
 
-        # Step 2: now tkinter's transparentcolor will actually work
-        self.win.attributes("-transparentcolor", _TRANSPARENT)
+        # Directly register the transparent color key — no tkinter wrapper
+        user32.SetLayeredWindowAttributes(hwnd, MAGENTA_COLORREF, 0, LWA_COLORKEY)
         self.win.update()
-
-        # Step 3: also add TRANSPARENT so clicks pass through to the game
-        style2 = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style2 | WS_EX_TRANSPARENT)
 
     def update(self, translations: list[tuple], region: dict):
         """
