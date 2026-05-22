@@ -14,6 +14,7 @@ from ocr import OCREngine
 from translator import TranslationEngine
 from overlay import TranslationOverlay
 from region_selector import select_region
+from window_picker import pick_window
 from utils import cjk_font
 
 
@@ -71,8 +72,8 @@ class TRTransApp:
         content = tk.Frame(self.root, bg=self.BG, padx=12, pady=10)
         content.pack(fill=tk.BOTH, expand=True)
 
-        # ── Region ──────────────────────────────────────────────────────
-        sec1 = self._section(content, "擷取區域")
+        # ── Capture source ───────────────────────────────────────────────
+        sec1 = self._section(content, "擷取來源")
         self._region_var = tk.StringVar(value="尚未設定")
         tk.Label(
             sec1, textvariable=self._region_var,
@@ -80,7 +81,11 @@ class TRTransApp:
             font=("Consolas", 9), anchor="w", padx=6,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
         tk.Button(
-            sec1, text="選擇區域", command=self._select_region,
+            sec1, text="選擇視窗", command=self._select_window,
+            **self._btn_style(),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        tk.Button(
+            sec1, text="手動框選", command=self._select_region,
             **self._btn_style(),
         ).pack(side=tk.RIGHT, padx=(6, 0))
         self._restore_region_label()
@@ -165,15 +170,26 @@ class TRTransApp:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._log_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        self._log("就緒。請先選擇擷取區域，再按「開始翻譯」。")
+        self._log("就緒。請選擇「視窗」或「手動框選」，再按「開始翻譯」。")
 
     # ------------------------------------------------------------------ #
     # Event handlers                                                       #
     # ------------------------------------------------------------------ #
 
+    def _select_window(self):
+        if self.running:
+            messagebox.showwarning("提示", "請先停止翻譯再重新選擇。")
+            return
+        title = pick_window(self.root)
+        if title:
+            self.config.set("window_title", title)
+            self.config.set("capture_region", None)
+            self._region_var.set(f"視窗：{title}")
+            self._log(f"已選取視窗：{title}")
+
     def _select_region(self):
         if self.running:
-            messagebox.showwarning("提示", "請先停止翻譯再重新選擇區域。")
+            messagebox.showwarning("提示", "請先停止翻譯再重新選擇。")
             return
         self._log("正在截圖，請切換到遊戲視窗...")
         self.root.after(300, self._do_select_region)
@@ -186,6 +202,7 @@ class TRTransApp:
             region = select_region(full)
             if region:
                 self.config.set("capture_region", region)
+                self.config.set("window_title", None)
                 self._region_var.set(
                     f"左:{region['left']}  上:{region['top']}  "
                     f"寬:{region['width']}  高:{region['height']}"
@@ -205,8 +222,8 @@ class TRTransApp:
             self._start()
 
     def _start(self):
-        if not self.config.get("capture_region"):
-            messagebox.showwarning("提示", "請先選擇要擷取的遊戲區域。")
+        if not self.config.get("window_title") and not self.config.get("capture_region"):
+            messagebox.showwarning("提示", "請先選擇視窗或手動框選擷取區域。")
             return
 
         # Create overlay if needed
@@ -255,15 +272,22 @@ class TRTransApp:
 
         while self.running:
             try:
-                region = self.config.get("capture_region")
-                if not region:
-                    time.sleep(0.5)
-                    continue
-
-                img = self.capture.capture_region(region)
-                if img is None:
-                    time.sleep(0.2)
-                    continue
+                win_title = self.config.get("window_title")
+                if win_title:
+                    img, region = self.capture.capture_window(win_title)
+                    if img is None:
+                        self._log_threadsafe(f"找不到視窗「{win_title}」，請確認遊戲已開啟。")
+                        time.sleep(2)
+                        continue
+                else:
+                    region = self.config.get("capture_region")
+                    if not region:
+                        time.sleep(0.5)
+                        continue
+                    img = self.capture.capture_region(region)
+                    if img is None:
+                        time.sleep(0.2)
+                        continue
 
                 text = self.ocr.extract_text(img)
                 text = text.strip()
@@ -313,6 +337,10 @@ class TRTransApp:
         self.root.after(0, lambda: self._log(msg))
 
     def _restore_region_label(self):
+        t = self.config.get("window_title")
+        if t:
+            self._region_var.set(f"視窗：{t}")
+            return
         r = self.config.get("capture_region")
         if r:
             self._region_var.set(

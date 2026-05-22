@@ -23,13 +23,7 @@ def select_region(screenshot_bgr: np.ndarray) -> dict | None:
     root.attributes("-topmost", True)
     root.attributes("-alpha", 0.55)
     root.configure(bg="black")
-
-    if is_macos():
-        # macOS: cover the screen manually instead of using -fullscreen
-        root.geometry(f"{w}x{h}+0+0")
-    else:
-        root.attributes("-fullscreen", True)
-
+    root.geometry(f"{w}x{h}+0+0")
     root.lift()
     root.focus_force()
 
