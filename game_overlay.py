@@ -272,12 +272,45 @@ class GameOverlay:
         gdi32 = ctypes.windll.gdi32
         hwnd  = self.win.winfo_id()
 
-        # Fix return types for 64-bit handles
-        u32.GetDC.restype             = ctypes.c_void_p
-        u32.UpdateLayeredWindow.restype = ctypes.c_bool
-        gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-        gdi32.CreateDIBSection.restype   = ctypes.c_void_p
-        gdi32.SelectObject.restype       = ctypes.c_void_p
+        # ── 64-bit-safe signatures ───────────────────────────────────────
+        # On 64-bit Windows, HWND/HDC/HBITMAP are 64-bit.  ctypes defaults
+        # to c_int (32-bit) for unspecified argtypes, causing an overflow
+        # when a 64-bit handle is passed.  Setting argtypes to c_void_p
+        # (pointer-sized) fixes this.  Setting them here is idempotent —
+        # ctypes caches the function objects, so the cost is paid once.
+        u32.GetDC.restype              = ctypes.c_void_p
+        u32.GetDC.argtypes             = [ctypes.c_void_p]
+        u32.ReleaseDC.restype          = ctypes.c_int
+        u32.ReleaseDC.argtypes         = [ctypes.c_void_p, ctypes.c_void_p]
+        u32.UpdateLayeredWindow.restype  = ctypes.c_bool
+        u32.UpdateLayeredWindow.argtypes = [
+            ctypes.c_void_p,               # hwnd
+            ctypes.c_void_p,               # hdcDst
+            ctypes.POINTER(_POINT),        # pptDst
+            ctypes.POINTER(_SIZE),         # psize
+            ctypes.c_void_p,               # hdcSrc
+            ctypes.POINTER(_POINT),        # pptSrc
+            wintypes.DWORD,                # crKey
+            ctypes.POINTER(_BLENDFUNCTION),# pblend
+            wintypes.DWORD,                # dwFlags
+        ]
+        gdi32.CreateCompatibleDC.restype  = ctypes.c_void_p
+        gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+        gdi32.CreateDIBSection.restype    = ctypes.c_void_p
+        gdi32.CreateDIBSection.argtypes   = [
+            ctypes.c_void_p,               # hdc
+            ctypes.POINTER(_BITMAPINFO),   # pbmi
+            wintypes.UINT,                 # usage
+            ctypes.POINTER(ctypes.c_void_p),  # ppvBits
+            ctypes.c_void_p,               # hSection
+            wintypes.DWORD,                # offset
+        ]
+        gdi32.SelectObject.restype    = ctypes.c_void_p
+        gdi32.SelectObject.argtypes   = [ctypes.c_void_p, ctypes.c_void_p]
+        gdi32.DeleteObject.restype    = ctypes.c_bool
+        gdi32.DeleteObject.argtypes   = [ctypes.c_void_p]
+        gdi32.DeleteDC.restype        = ctypes.c_bool
+        gdi32.DeleteDC.argtypes       = [ctypes.c_void_p]
 
         hdc_screen = u32.GetDC(None)
         hdc_mem    = gdi32.CreateCompatibleDC(hdc_screen)
