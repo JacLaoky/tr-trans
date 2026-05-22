@@ -39,7 +39,10 @@ class TRTransApp:
 
         self.running = False
         self._thread: threading.Thread | None = None
-        self._last_text = ""
+        self._last_text = ""       # last successfully translated text
+        self._pending_text = ""    # candidate text waiting for stability
+        self._pending_count = 0    # consecutive frames with same text
+        self._no_text_count = 0    # consecutive frames with no text
         self._ocr_ready = False
 
         self.root = tk.Tk()
@@ -400,35 +403,64 @@ class TRTransApp:
             time.sleep(self.config.get("capture_interval"))
 
     def _process_inplace(self, img, region):
-        """OCR with bboxes → translate each item → update game overlay."""
+        """OCR with bboxes → stability check → batch translate → update overlay."""
         items = self.ocr.extract_with_boxes(img)
+
         if not items:
-            self._log_threadsafe("[OCR] 未偵測到文字")
-            if self.game_overlay and self.game_overlay.exists():
+            self._no_text_count += 1
+            self._pending_count = 0
+            # Clear overlay only after 3 consecutive empty frames (avoids flicker)
+            if self._no_text_count >= 3 and self.game_overlay and self.game_overlay.exists():
                 self.root.after(0, self.game_overlay.clear)
             return
 
+        self._no_text_count = 0
         flat = " ".join(t for _, t in items)
+
+        # Stability gate: same text must appear in 2 consecutive frames before translating
+        if flat == self._pending_text:
+            self._pending_count += 1
+        else:
+            self._pending_text = flat
+            self._pending_count = 1
+
+        if self._pending_count < 2:
+            return  # wait for next frame to confirm
+
         if flat == self._last_text:
-            return
+            return  # already translated this exact content
+
         self._last_text = flat
         self._log_threadsafe(f"[OCR] {flat[:60]}{'…' if len(flat) > 60 else ''}")
 
-        translated_items = [(bbox, self.translator.translate(text)) for bbox, text in items]
+        # Batch translate all bboxes in one API call
+        bboxes = [bbox for bbox, _ in items]
+        texts  = [text for _, text in items]
+        translated = self.translator.translate_batch(texts)
+        translated_items = list(zip(bboxes, translated))
 
         if self.game_overlay and self.game_overlay.exists():
             self.root.after(
                 0, lambda ti=translated_items, r=region:
                 self.game_overlay.update(ti, r)
             )
-        first = translated_items[0][1] if translated_items else ""
-        self._log_threadsafe(f"[翻] {first[:60]}{'…' if len(first) > 60 else ''}")
+        self._log_threadsafe(f"[翻] {translated[0][:60]}{'…' if len(translated[0]) > 60 else ''}")
 
     def _process_panel(self, img):
-        """Plain OCR → translate → update floating panel."""
+        """Plain OCR → stability check → translate → update floating panel."""
         text = self.ocr.extract_text(img).strip()
-        if not text or text == self._last_text:
+        if not text:
             return
+
+        if text == self._pending_text:
+            self._pending_count += 1
+        else:
+            self._pending_text = text
+            self._pending_count = 1
+
+        if self._pending_count < 2 or text == self._last_text:
+            return
+
         self._last_text = text
         self._log_threadsafe(f"[OCR] {text[:60]}{'…' if len(text) > 60 else ''}")
 
