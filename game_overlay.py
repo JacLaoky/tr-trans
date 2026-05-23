@@ -153,11 +153,25 @@ class GameOverlay:
         # Register window class (once per process)
         with GameOverlay._cls_lock:
             if not GameOverlay._cls_registered:
+                # On 64-bit Windows, WPARAM/LPARAM/LRESULT are 64-bit.
+                # wintypes.WPARAM/LPARAM are c_long (32-bit) — wrong!
+                # Use c_size_t / c_ssize_t (pointer-sized) instead.
                 WNDPROC = ctypes.WINFUNCTYPE(
-                    wintypes.LPARAM,
-                    wintypes.HWND, wintypes.UINT,
-                    wintypes.WPARAM, wintypes.LPARAM,
+                    ctypes.c_ssize_t,   # LRESULT
+                    ctypes.c_void_p,    # HWND
+                    wintypes.UINT,      # UINT  message
+                    ctypes.c_size_t,    # WPARAM (64-bit unsigned)
+                    ctypes.c_ssize_t,   # LPARAM (64-bit signed)
                 )
+
+                # Set 64-bit-safe argtypes for functions called inside wnd_proc
+                u32.DefWindowProcW.restype  = ctypes.c_ssize_t
+                u32.DefWindowProcW.argtypes = [
+                    ctypes.c_void_p, wintypes.UINT,
+                    ctypes.c_size_t, ctypes.c_ssize_t,
+                ]
+                u32.PostQuitMessage.restype  = None
+                u32.PostQuitMessage.argtypes = [ctypes.c_int]
 
                 class _WNDCLASSEX(ctypes.Structure):
                     _fields_ = [
@@ -179,6 +193,7 @@ class GameOverlay:
                 def _wnd_proc(hwnd, msg, wParam, lParam):
                     if msg == 0x0002:   # WM_DESTROY
                         u32.PostQuitMessage(0)
+                        return 0
                     return u32.DefWindowProcW(hwnd, msg, wParam, lParam)
 
                 self._wndproc_ref = _wnd_proc   # prevent GC
