@@ -1,29 +1,26 @@
 """
-In-place game overlay using Win32 UpdateLayeredWindow for per-pixel alpha.
+In-place game overlay — pure Win32 layered window, no tkinter.
 
-Why this approach:
-  SetLayeredWindowAttributes / colorkey transparency is unreliable on modern
-  Windows because DWM colour-management can silently shift pixel values, so
-  the colorkey never matches and the whole window stays pink.
+Root cause of previous failures:
+  tkinter Toplevel creates an outer "frame" HWND + an inner "client" HWND.
+  winfo_id() returns the INNER HWND.  UpdateLayeredWindow on the inner HWND
+  works, but the outer frame HWND is painted on top of it, hiding everything.
 
-  UpdateLayeredWindow bypasses colorkey entirely.  We hand DWM a 32-bit
-  premultiplied-BGRA bitmap; pixels with alpha=0 are fully transparent
-  (and click-through because WS_EX_TRANSPARENT is still set), pixels
-  with alpha>0 are composited at the hardware level — no colour shifts,
-  no GDI interference, no magenta.
+Fix: create the overlay window directly with Win32 CreateWindowExW so we
+own the HWND and there is no hidden wrapper.
 """
-import tkinter as tk
-from PIL import Image, ImageDraw, ImageFont
-from utils import is_windows
+import threading
 import os
 import ctypes
 from ctypes import wintypes
+from PIL import Image, ImageDraw, ImageFont
+from utils import is_windows
 
 
-# ── colours (RGBA) ───────────────────────────────────────────────────────────
-_BG_RGBA     = (26,  26,  46,  220)   # dark navy, mostly opaque
-_TEXT_RGBA   = (224, 224, 255, 255)   # light blue-white
-_BORDER_RGBA = (74,  144, 217, 255)   # accent border
+# ── Colours (RGBA) ────────────────────────────────────────────────────────────
+_BG_RGBA     = (26,  26,  46,  220)
+_TEXT_RGBA   = (224, 224, 255, 255)
+_BORDER_RGBA = (74,  144, 217, 255)
 
 
 # ── Win32 structs ─────────────────────────────────────────────────────────────
@@ -49,10 +46,7 @@ class _BITMAPINFOHEADER(ctypes.Structure):
     ]
 
 class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [
-        ("bmiHeader", _BITMAPINFOHEADER),
-        ("bmiColors", wintypes.DWORD * 3),
-    ]
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
 class _BLENDFUNCTION(ctypes.Structure):
     _fields_ = [
@@ -62,143 +56,197 @@ class _BLENDFUNCTION(ctypes.Structure):
         ("AlphaFormat",         ctypes.c_ubyte),
     ]
 
+class _MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd",    wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam",  wintypes.WPARAM),
+        ("lParam",  wintypes.LPARAM),
+        ("time",    wintypes.DWORD),
+        ("pt",      _POINT),
+    ]
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+
+# ── Font helpers ──────────────────────────────────────────────────────────────
 def _find_cjk_font(size: int):
-    """
-    Find a font that can actually render CJK (Chinese/Korean) characters.
-    Korean Windows often lacks Traditional Chinese fonts, so we try Korean
-    fonts (Batang/Gulim) which include the full CJK Unified Ideographs block.
-    We verify each candidate by measuring a sample CJK character.
-    """
     candidates = [
-        # Traditional Chinese (ideal)
-        r"C:\Windows\Fonts\msjh.ttc",     # Microsoft JhengHei
+        r"C:\Windows\Fonts\msjh.ttc",
         r"C:\Windows\Fonts\msjhbd.ttc",
-        # Simplified Chinese (covers most CJK)
-        r"C:\Windows\Fonts\msyh.ttc",     # Microsoft YaHei
+        r"C:\Windows\Fonts\msyh.ttc",
         r"C:\Windows\Fonts\msyhbd.ttc",
-        r"C:\Windows\Fonts\simsun.ttc",   # SimSun
-        r"C:\Windows\Fonts\simhei.ttf",   # SimHei
-        # Korean fonts — Batang & Gulim include CJK Unified Ideographs
-        r"C:\Windows\Fonts\batang.ttc",   # Batang (Korean serif, has CJK)
-        r"C:\Windows\Fonts\gulim.ttc",    # Gulim (Korean sans, has CJK)
-        # macOS
+        r"C:\Windows\Fonts\simsun.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\batang.ttc",
+        r"C:\Windows\Fonts\gulim.ttc",
         "/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf",
     ]
-    probe_img  = Image.new("RGB", (60, 40))
-    probe_draw = ImageDraw.Draw(probe_img)
+    probe = ImageDraw.Draw(Image.new("RGB", (60, 40)))
     for path in candidates:
         if os.path.exists(path):
             try:
                 font = ImageFont.truetype(path, size)
-                # Verify it can actually render a CJK character
-                bb = probe_draw.textbbox((0, 0), "貝", font=font, anchor="lt")
-                if bb[2] > bb[0]:          # non-zero width → can render CJK
+                bb   = probe.textbbox((0, 0), "貝", font=font, anchor="lt")
+                if bb[2] > bb[0]:
                     print(f"[overlay] font: {os.path.basename(path)}", flush=True)
                     return font
             except Exception:
                 pass
-    # Absolute last resort — load_default() can't render CJK but at least won't crash
-    print("[overlay] WARNING: no CJK font found, text may be invisible", flush=True)
+    print("[overlay] WARNING: no CJK font found", flush=True)
     return ImageFont.load_default()
 
 
 def _to_premult_bgra(img: Image.Image) -> bytes:
-    """
-    Convert an RGBA PIL image to premultiplied BGRA bytes suitable for a
-    Win32 32-bpp DIBSection used with UpdateLayeredWindow / AC_SRC_ALPHA.
-
-    Layout per pixel (little-endian in memory):  [B*a, G*a, R*a, A]
-    where the R/G/B values are pre-multiplied by (A/255).
-    """
+    """RGBA → premultiplied BGRA for Win32 UpdateLayeredWindow."""
     try:
         import numpy as np
-        arr   = np.array(img, dtype=np.uint16)     # H×W×4, channels = RGBA
-        alpha = arr[:, :, 3:4]                      # keep dims for broadcast
-        arr[:, :, :3] = arr[:, :, :3] * alpha // 255   # premultiply RGB
-        arr   = arr.astype(np.uint8)
-        bgra  = arr[:, :, [2, 1, 0, 3]]            # RGBA → BGRA
-        return bgra.tobytes()
+        a    = np.array(img, dtype=np.uint16)
+        alph = a[:, :, 3:4]
+        a[:, :, :3] = a[:, :, :3] * alph // 255
+        a    = a.astype(np.uint8)
+        return a[:, :, [2, 1, 0, 3]].tobytes()
     except ImportError:
-        # Slow fallback (numpy not available — shouldn't happen)
         data = img.tobytes()
         out  = bytearray(len(data))
         for i in range(0, len(data), 4):
             r, g, b, a = data[i], data[i+1], data[i+2], data[i+3]
             f = a / 255.0
-            out[i]   = int(b * f)
-            out[i+1] = int(g * f)
-            out[i+2] = int(r * f)
-            out[i+3] = a
+            out[i], out[i+1], out[i+2], out[i+3] = int(b*f), int(g*f), int(r*f), a
         return bytes(out)
 
 
-# ── overlay class ─────────────────────────────────────────────────────────────
+# ── Overlay ───────────────────────────────────────────────────────────────────
 class GameOverlay:
-    def __init__(self):
-        self.win = tk.Toplevel()
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg="black")
-        # Start off-screen (size 1×1) so the window exists but is invisible
-        self.win.geometry("1x1+-9999+-9999")
-        self.win.update_idletasks()         # ensure HWND is realised
+    """
+    Transparent click-through overlay using a pure Win32 layered window.
 
+    On Windows: creates a WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST
+    popup window via ctypes.  UpdateLayeredWindow sets per-pixel RGBA content.
+
+    On non-Windows: no-op (macOS testing uses the panel overlay instead).
+    """
+
+    _WIN_CLASS = "TRTransOverlay"
+    _cls_registered = False
+    _cls_lock       = threading.Lock()
+
+    def __init__(self):
+        self._hwnd: int | None = None
         self._font_cache: dict = {}
         self._last_region: dict | None = None
+        self._alive  = True
+        self._ready  = threading.Event()
 
         if is_windows():
-            self._setup_windows()
+            t = threading.Thread(target=self._msg_loop, daemon=True)
+            t.start()
+            ok = self._ready.wait(timeout=5.0)
+            if not ok or not self._hwnd:
+                print("[overlay] ERROR: window creation timed out", flush=True)
 
-    def _setup_windows(self):
-        hwnd              = self.win.winfo_id()
-        GWL_EXSTYLE       = -20
+    # ── Win32 window thread ──────────────────────────────────────────────────
+    def _msg_loop(self):
+        u32   = ctypes.windll.user32
+        k32   = ctypes.windll.kernel32
+        hInst = k32.GetModuleHandleW(None)
+
+        # Register window class (once per process)
+        with GameOverlay._cls_lock:
+            if not GameOverlay._cls_registered:
+                WNDPROC = ctypes.WINFUNCTYPE(
+                    wintypes.LPARAM,
+                    wintypes.HWND, wintypes.UINT,
+                    wintypes.WPARAM, wintypes.LPARAM,
+                )
+
+                class _WNDCLASSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize",        wintypes.UINT),
+                        ("style",         wintypes.UINT),
+                        ("lpfnWndProc",   WNDPROC),
+                        ("cbClsExtra",    ctypes.c_int),
+                        ("cbWndExtra",    ctypes.c_int),
+                        ("hInstance",     wintypes.HMODULE),
+                        ("hIcon",         wintypes.HANDLE),
+                        ("hCursor",       wintypes.HANDLE),
+                        ("hbrBackground", wintypes.HANDLE),
+                        ("lpszMenuName",  wintypes.LPCWSTR),
+                        ("lpszClassName", wintypes.LPCWSTR),
+                        ("hIconSm",       wintypes.HANDLE),
+                    ]
+
+                @WNDPROC
+                def _wnd_proc(hwnd, msg, wParam, lParam):
+                    if msg == 0x0002:   # WM_DESTROY
+                        u32.PostQuitMessage(0)
+                    return u32.DefWindowProcW(hwnd, msg, wParam, lParam)
+
+                self._wndproc_ref = _wnd_proc   # prevent GC
+
+                wc = _WNDCLASSEX()
+                wc.cbSize        = ctypes.sizeof(_WNDCLASSEX)
+                wc.lpfnWndProc   = _wnd_proc
+                wc.hInstance     = hInst
+                wc.lpszClassName = GameOverlay._WIN_CLASS
+                u32.RegisterClassExW(ctypes.byref(wc))
+                GameOverlay._cls_registered = True
+
+        # CreateWindowExW — set return/arg types for 64-bit safety
+        u32.CreateWindowExW.restype  = ctypes.c_void_p
+        u32.CreateWindowExW.argtypes = [
+            wintypes.DWORD,    # dwExStyle
+            wintypes.LPCWSTR,  # lpClassName
+            wintypes.LPCWSTR,  # lpWindowName
+            wintypes.DWORD,    # dwStyle
+            ctypes.c_int, ctypes.c_int,   # x, y
+            ctypes.c_int, ctypes.c_int,   # nWidth, nHeight
+            ctypes.c_void_p,   # hWndParent
+            ctypes.c_void_p,   # hMenu
+            wintypes.HMODULE,  # hInstance
+            ctypes.c_void_p,   # lpParam
+        ]
+
+        WS_POPUP          = 0x80000000
         WS_EX_LAYERED     = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_TOPMOST     = 0x00000008
+        WS_EX_TOOLWINDOW  = 0x00000080   # no taskbar entry
 
-        u32   = ctypes.windll.user32
-        style = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        u32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                           style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
-        # !! Do NOT call SetLayeredWindowAttributes !!
-        # UpdateLayeredWindow and SetLayeredWindowAttributes are mutually
-        # exclusive modes; mixing them causes the window to disappear.
+        self._hwnd = u32.CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            GameOverlay._WIN_CLASS,
+            "TR Trans Overlay",
+            WS_POPUP,
+            -9999, -9999, 1, 1,
+            None, None, hInst, None,
+        )
+        print(f"[overlay] HWND={self._hwnd}", flush=True)
+        self._ready.set()
 
+        # Pump messages
+        msg = _MSG()
+        while self._alive:
+            ret = u32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret == 0 or ret == -1:
+                break
+            u32.TranslateMessage(ctypes.byref(msg))
+            u32.DispatchMessageW(ctypes.byref(msg))
+
+    # ── Font ─────────────────────────────────────────────────────────────────
     def _font(self, size: int):
         if size not in self._font_cache:
             self._font_cache[size] = _find_cjk_font(size)
         return self._font_cache[size]
 
-    # ── public API ────────────────────────────────────────────────────────────
-
+    # ── Public API ────────────────────────────────────────────────────────────
     def update(self, translations: list, region: dict):
+        if not is_windows() or not self._hwnd:
+            return
+
         gx, gy = region["left"],  region["top"]
         gw, gh = region["width"], region["height"]
         self._last_region = region
 
-        # ── DEBUG: draw a test rectangle at screen (0,0) — top-left corner ─
-        # If this appears, the overlay works and the issue is z-order/DPI.
-        # If this does NOT appear, there is a more fundamental window issue.
-        _dbg_w, _dbg_h = 480, 120
-        _dbg_img = Image.new("RGBA", (_dbg_w, _dbg_h), (0, 0, 0, 0))
-        _dbg_draw = ImageDraw.Draw(_dbg_img)
-        _dbg_draw.rectangle([0, 0, _dbg_w-1, _dbg_h-1], fill=(220, 0, 0, 230))
-        _dbg_draw.rectangle([4, 4, _dbg_w-5, _dbg_h-5], outline=(255, 255, 0, 255), width=3)
-        try:
-            _dbg_draw.text((12, 12), "OVERLAY TEST — if you see this, overlay works",
-                           fill=(255, 255, 255, 255), font=self._font(14))
-            _dbg_draw.text((12, 40), f"game win=({gx},{gy}) {gw}x{gh}",
-                           fill=(255, 255, 200, 255), font=self._font(12))
-        except Exception:
-            pass
-        self._ulw(_dbg_img, 0, 0)  # ← FIXED top-left corner, unrelated to game
-        import time as _t; _t.sleep(3)   # hold for 3 s so you can see it
-        # ─────────────────────────────────────────────────────────────────
-
-        # Fully transparent canvas — only drawn boxes will be visible
         img  = Image.new("RGBA", (gw, gh), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
@@ -211,133 +259,88 @@ class GameOverlay:
             cx, cy = (x1 + x3) // 2, (y1 + y3) // 2
             fsize  = max(11, min(22, int(box_h * 0.75)))
             font   = self._font(fsize)
-
-            tb      = draw.textbbox((0, 0), text, font=font, anchor="lt")
-            tw, th  = tb[2] - tb[0], tb[3] - tb[1]
-            pad     = 4
-
-            rx1 = cx - tw // 2 - pad
-            ry1 = cy - th // 2 - pad
-            rx2 = cx + tw // 2 + pad
-            ry2 = cy + th // 2 + pad
-
-            draw.rectangle([rx1, ry1, rx2, ry2],
-                           fill=_BG_RGBA, outline=_BORDER_RGBA, width=1)
+            tb     = draw.textbbox((0, 0), text, font=font, anchor="lt")
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            pad    = 4
+            draw.rectangle(
+                [cx-tw//2-pad, cy-th//2-pad, cx+tw//2+pad, cy+th//2+pad],
+                fill=_BG_RGBA, outline=_BORDER_RGBA, width=1,
+            )
             draw.text((cx, cy), text, fill=_TEXT_RGBA, font=font, anchor="mm")
 
-        if is_windows():
-            ok = self._ulw(img, gx, gy)  # positions, renders, and shows in one path
-            # Diagnostic
-            first_box = ""
-            for bbox, text in translations:
-                if text and not text.startswith("["):
-                    x1, y1 = int(bbox[0][0]), int(bbox[0][1])
-                    x3, y3 = int(bbox[2][0]), int(bbox[2][1])
-                    first_box = f"bbox=({x1},{y1})-({x3},{y3})"
-                    break
-            print(
-                f"[overlay] win=({gx},{gy}) size={gw}x{gh}  "
-                f"{first_box}  ulw={'OK' if ok else 'FAIL'}",
-                flush=True,
-            )
-        else:
-            self.win.deiconify()
-            self._show_fallback(img, gx, gy, gw, gh)
+        ok = self._ulw(img, gx, gy)
+        print(f"[overlay] win=({gx},{gy}) {gw}x{gh}  ulw={'OK' if ok else 'FAIL'}",
+              flush=True)
 
     def clear(self):
-        if self._last_region:
-            r     = self._last_region
-            blank = Image.new("RGBA", (r["width"], r["height"]), (0, 0, 0, 0))
-            if is_windows():
-                self._ulw(blank, r["left"], r["top"])
-            elif hasattr(self, "_canvas"):
-                self._canvas.delete("all")
-                self._img_ref = None
+        if not is_windows() or not self._hwnd or not self._last_region:
+            return
+        r     = self._last_region
+        blank = Image.new("RGBA", (r["width"], r["height"]), (0, 0, 0, 0))
+        self._ulw(blank, r["left"], r["top"])
+        self.hide()
 
     def show(self):
-        if is_windows():
-            u32 = ctypes.windll.user32
-            u32.SetWindowPos.restype  = ctypes.c_bool
-            u32.SetWindowPos.argtypes = [
-                ctypes.c_void_p, ctypes.c_void_p,
-                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                wintypes.UINT,
-            ]
-            u32.SetWindowPos(self.win.winfo_id(), ctypes.c_void_p(-1),
-                             0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
-        else:
-            self.win.deiconify()
+        if is_windows() and self._hwnd:
+            self._swp(0x0001 | 0x0002 | 0x0010 | 0x0040)  # NOSIZE|NOMOVE|NOACTIVATE|SHOW
 
     def hide(self):
-        if is_windows():
+        if is_windows() and self._hwnd:
             u32 = ctypes.windll.user32
             u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
             u32.ShowWindow.restype  = ctypes.c_bool
-            u32.ShowWindow(self.win.winfo_id(), 0)  # SW_HIDE
-        else:
-            self.win.withdraw()
+            u32.ShowWindow(self._hwnd, 0)   # SW_HIDE
 
     def exists(self) -> bool:
-        try:
-            return bool(self.win.winfo_exists())
-        except Exception:
-            return False
+        return bool(self._hwnd) and self._alive
 
     def destroy(self):
-        try:
-            self.win.destroy()
-        except Exception:
-            pass
+        self._alive = False
+        if self._hwnd:
+            u32 = ctypes.windll.user32
+            u32.PostMessageW.argtypes = [
+                ctypes.c_void_p, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+            ]
+            u32.PostMessageW(self._hwnd, 0x0010, 0, 0)   # WM_CLOSE
+            self._hwnd = None
 
-    # ── Win32 UpdateLayeredWindow ─────────────────────────────────────────────
+    # ── Internals ─────────────────────────────────────────────────────────────
+    def _swp(self, flags: int):
+        """SetWindowPos helper — HWND_TOPMOST + given flags."""
+        u32 = ctypes.windll.user32
+        u32.SetWindowPos.restype  = ctypes.c_bool
+        u32.SetWindowPos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.UINT,
+        ]
+        u32.SetWindowPos(self._hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
 
-    def _ulw(self, img: Image.Image, win_x: int, win_y: int):
-        """
-        Blit an RGBA PIL image to the layered window.
-
-        UpdateLayeredWindow sets BOTH the visual content and the window's
-        screen position/size in one atomic call, bypassing all GDI/DWM
-        colour-management that broke the colorkey approach.
-        """
+    def _ulw(self, img: Image.Image, win_x: int, win_y: int) -> bool:
+        """Blit a premultiplied-BGRA PIL image via UpdateLayeredWindow."""
         w, h   = img.size
         pixels = _to_premult_bgra(img)
 
         u32   = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
-        hwnd  = self.win.winfo_id()
 
-        # ── 64-bit-safe signatures ───────────────────────────────────────
-        # On 64-bit Windows, HWND/HDC/HBITMAP are 64-bit.  ctypes defaults
-        # to c_int (32-bit) for unspecified argtypes, causing an overflow
-        # when a 64-bit handle is passed.  Setting argtypes to c_void_p
-        # (pointer-sized) fixes this.  Setting them here is idempotent —
-        # ctypes caches the function objects, so the cost is paid once.
         u32.GetDC.restype              = ctypes.c_void_p
         u32.GetDC.argtypes             = [ctypes.c_void_p]
         u32.ReleaseDC.restype          = ctypes.c_int
         u32.ReleaseDC.argtypes         = [ctypes.c_void_p, ctypes.c_void_p]
         u32.UpdateLayeredWindow.restype  = ctypes.c_bool
         u32.UpdateLayeredWindow.argtypes = [
-            ctypes.c_void_p,               # hwnd
-            ctypes.c_void_p,               # hdcDst
-            ctypes.POINTER(_POINT),        # pptDst
-            ctypes.POINTER(_SIZE),         # psize
-            ctypes.c_void_p,               # hdcSrc
-            ctypes.POINTER(_POINT),        # pptSrc
-            wintypes.DWORD,                # crKey
-            ctypes.POINTER(_BLENDFUNCTION),# pblend
-            wintypes.DWORD,                # dwFlags
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.POINTER(_POINT), ctypes.POINTER(_SIZE),
+            ctypes.c_void_p, ctypes.POINTER(_POINT),
+            wintypes.DWORD, ctypes.POINTER(_BLENDFUNCTION), wintypes.DWORD,
         ]
         gdi32.CreateCompatibleDC.restype  = ctypes.c_void_p
         gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
         gdi32.CreateDIBSection.restype    = ctypes.c_void_p
         gdi32.CreateDIBSection.argtypes   = [
-            ctypes.c_void_p,               # hdc
-            ctypes.POINTER(_BITMAPINFO),   # pbmi
-            wintypes.UINT,                 # usage
-            ctypes.POINTER(ctypes.c_void_p),  # ppvBits
-            ctypes.c_void_p,               # hSection
-            wintypes.DWORD,                # offset
+            ctypes.c_void_p, ctypes.POINTER(_BITMAPINFO), wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, wintypes.DWORD,
         ]
         gdi32.SelectObject.restype    = ctypes.c_void_p
         gdi32.SelectObject.argtypes   = [ctypes.c_void_p, ctypes.c_void_p]
@@ -350,20 +353,16 @@ class GameOverlay:
         hdc_mem    = gdi32.CreateCompatibleDC(hdc_screen)
 
         bi = _BITMAPINFO()
-        bi.bmiHeader.biSize        = ctypes.sizeof(_BITMAPINFOHEADER)
-        bi.bmiHeader.biWidth       = w
-        bi.bmiHeader.biHeight      = -h    # negative = top-down DIB
-        bi.bmiHeader.biPlanes      = 1
-        bi.bmiHeader.biBitCount    = 32
-        bi.bmiHeader.biCompression = 0     # BI_RGB
-        bi.bmiHeader.biSizeImage   = 0
+        bi.bmiHeader.biSize      = ctypes.sizeof(_BITMAPINFOHEADER)
+        bi.bmiHeader.biWidth     = w
+        bi.bmiHeader.biHeight    = -h
+        bi.bmiHeader.biPlanes    = 1
+        bi.bmiHeader.biBitCount  = 32
+        bi.bmiHeader.biSizeImage = 0
 
         pBits = ctypes.c_void_p()
-        hbm = gdi32.CreateDIBSection(
-            hdc_mem, ctypes.byref(bi),
-            0,                              # DIB_RGB_COLORS
-            ctypes.byref(pBits), None, 0
-        )
+        hbm   = gdi32.CreateDIBSection(hdc_mem, ctypes.byref(bi), 0,
+                                        ctypes.byref(pBits), None, 0)
         if not hbm:
             gdi32.DeleteDC(hdc_mem)
             u32.ReleaseDC(None, hdc_screen)
@@ -373,25 +372,19 @@ class GameOverlay:
         old_bm = gdi32.SelectObject(hdc_mem, hbm)
 
         blend = _BLENDFUNCTION()
-        blend.BlendOp             = 0    # AC_SRC_OVER
-        blend.BlendFlags          = 0
+        blend.BlendOp             = 0      # AC_SRC_OVER
         blend.SourceConstantAlpha = 255
-        blend.AlphaFormat         = 1    # AC_SRC_ALPHA — use per-pixel alpha
+        blend.AlphaFormat         = 1      # AC_SRC_ALPHA
 
         pt_dst = _POINT(win_x, win_y)
         pt_src = _POINT(0, 0)
         sz     = _SIZE(w, h)
 
         ok = u32.UpdateLayeredWindow(
-            hwnd,
-            hdc_screen,
-            ctypes.byref(pt_dst),   # window screen position
-            ctypes.byref(sz),       # window size
-            hdc_mem,                # source DC
-            ctypes.byref(pt_src),   # source origin
-            0,                      # crKey (ignored for ULW_ALPHA)
-            ctypes.byref(blend),
-            2                       # ULW_ALPHA = 2
+            self._hwnd, hdc_screen,
+            ctypes.byref(pt_dst), ctypes.byref(sz),
+            hdc_mem, ctypes.byref(pt_src),
+            0, ctypes.byref(blend), 2,   # ULW_ALPHA
         )
 
         gdi32.SelectObject(hdc_mem, old_bm)
@@ -399,52 +392,7 @@ class GameOverlay:
         gdi32.DeleteDC(hdc_mem)
         u32.ReleaseDC(None, hdc_screen)
 
-        # Make visible and re-assert topmost in one atomic call.
-        # Using SetWindowPos instead of ShowWindow because:
-        #   1. SWP_SHOWWINDOW makes it visible without disturbing position
-        #   2. HWND_TOPMOST (-1) beats game windows that also set themselves topmost
-        #   3. Sets argtypes explicitly to avoid 64-bit HWND truncation
-        u32.SetWindowPos.restype  = ctypes.c_bool
-        u32.SetWindowPos.argtypes = [
-            ctypes.c_void_p,  # hwnd
-            ctypes.c_void_p,  # hWndInsertAfter (HWND_TOPMOST = -1)
-            ctypes.c_int, ctypes.c_int,   # x, y  (ignored: SWP_NOMOVE)
-            ctypes.c_int, ctypes.c_int,   # cx, cy (ignored: SWP_NOSIZE)
-            wintypes.UINT,                # uFlags
-        ]
-        SWP_NOSIZE     = 0x0001
-        SWP_NOMOVE     = 0x0002
-        SWP_NOACTIVATE = 0x0010
-        SWP_SHOWWINDOW = 0x0040
-        u32.SetWindowPos(
-            hwnd,
-            ctypes.c_void_p(-1),    # HWND_TOPMOST
-            0, 0, 0, 0,
-            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
+        # Show + re-assert topmost atomically
+        self._swp(0x0001 | 0x0002 | 0x0010 | 0x0040)  # NOSIZE|NOMOVE|NOACTIVATE|SHOW
 
         return bool(ok)
-
-    # ── macOS / Linux fallback ────────────────────────────────────────────────
-
-    def _show_fallback(self, img_rgba: Image.Image,
-                       gx: int, gy: int, gw: int, gh: int):
-        """Best-effort colorkey fallback for non-Windows platforms."""
-        from PIL import ImageTk
-        if not hasattr(self, "_canvas"):
-            self.win.configure(bg="#FF00FF")
-            self._canvas = tk.Canvas(self.win, bg="#FF00FF",
-                                     highlightthickness=0)
-            self._canvas.pack(fill=tk.BOTH, expand=True)
-
-        self.win.geometry(f"{gw}x{gh}+{gx}+{gy}")
-
-        # Composite over a magenta background so transparent areas become colorkey
-        bg       = Image.new("RGBA", img_rgba.size, (255, 0, 255, 255))
-        _, _, _, a = img_rgba.split()
-        composed = Image.composite(img_rgba, bg, a).convert("RGB")
-
-        tk_img = ImageTk.PhotoImage(composed)
-        self._canvas.delete("all")
-        self._canvas.create_image(0, 0, anchor="nw", image=tk_img)
-        self._img_ref = tk_img
