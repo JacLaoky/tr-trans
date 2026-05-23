@@ -16,6 +16,20 @@ from ctypes import wintypes
 from PIL import Image, ImageDraw, ImageFont
 from utils import is_windows
 
+# Make the process DPI-aware so Win32 coords == physical pixels (same as mss).
+# Must be called before any window is created.
+if is_windows():
+    try:
+        _u32 = ctypes.windll.user32
+        # Try SetProcessDpiAwarenessContext (Win10+) first, fall back to older API
+        if hasattr(_u32, 'SetProcessDpiAwarenessContext'):
+            _u32.SetProcessDpiAwarenessContext(-4)   # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        else:
+            _u32.SetProcessDPIAware()
+        print("[overlay] DPI awareness set", flush=True)
+    except Exception as _e:
+        print(f"[overlay] DPI awareness failed: {_e}", flush=True)
+
 
 # ── Colours (RGBA) ────────────────────────────────────────────────────────────
 _BG_RGBA     = (26,  26,  46,  220)
@@ -148,6 +162,8 @@ class GameOverlay:
     def _msg_loop(self):
         u32   = ctypes.windll.user32
         k32   = ctypes.windll.kernel32
+        k32.GetModuleHandleW.restype  = ctypes.c_void_p
+        k32.GetModuleHandleW.argtypes = [ctypes.c_void_p]
         hInst = k32.GetModuleHandleW(None)
 
         # Register window class (once per process)
@@ -236,6 +252,23 @@ class GameOverlay:
             None, None, hInst, None,
         )
         print(f"[overlay] HWND={self._hwnd}", flush=True)
+
+        # ── Immediate visibility smoke-test ──────────────────────────────────
+        # Draw a solid bright-red 300×80 block at (50,50).
+        # If you can see this for ~2 seconds after launch, the Win32 path works.
+        if self._hwnd:
+            try:
+                _test_img = Image.new("RGBA", (300, 80), (255, 50, 50, 255))
+                _draw     = ImageDraw.Draw(_test_img)
+                _draw.text((10, 20), "TR-Trans overlay OK", fill=(255,255,255,255))
+                self._ulw(_test_img, 50, 50)
+                print("[overlay] smoke-test frame shown at (50,50)", flush=True)
+                import time; time.sleep(2)
+                # Hide the smoke-test window
+                u32.ShowWindow(self._hwnd, 0)   # SW_HIDE
+            except Exception as _e:
+                print(f"[overlay] smoke-test error: {_e}", flush=True)
+
         self._ready.set()
 
         # Pump messages
@@ -320,7 +353,7 @@ class GameOverlay:
             self._hwnd = None
 
     # ── Internals ─────────────────────────────────────────────────────────────
-    def _swp(self, flags: int):
+    def _swp(self, flags: int) -> bool:
         """SetWindowPos helper — HWND_TOPMOST + given flags."""
         u32 = ctypes.windll.user32
         u32.SetWindowPos.restype  = ctypes.c_bool
@@ -329,7 +362,8 @@ class GameOverlay:
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
             wintypes.UINT,
         ]
-        u32.SetWindowPos(self._hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
+        return bool(u32.SetWindowPos(self._hwnd, ctypes.c_void_p(-1),
+                                     0, 0, 0, 0, flags))
 
     def _ulw(self, img: Image.Image, win_x: int, win_y: int) -> bool:
         """Blit a premultiplied-BGRA PIL image via UpdateLayeredWindow."""
@@ -338,6 +372,13 @@ class GameOverlay:
 
         u32   = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
+        k32   = ctypes.windll.kernel32
+
+        # ── argtypes (64-bit safe) ────────────────────────────────────────────
+        k32.SetLastError.restype  = None
+        k32.SetLastError.argtypes = [wintypes.DWORD]
+        k32.GetLastError.restype  = wintypes.DWORD
+        k32.GetLastError.argtypes = []
 
         u32.GetDC.restype              = ctypes.c_void_p
         u32.GetDC.argtypes             = [ctypes.c_void_p]
@@ -350,6 +391,10 @@ class GameOverlay:
             ctypes.c_void_p, ctypes.POINTER(_POINT),
             wintypes.DWORD, ctypes.POINTER(_BLENDFUNCTION), wintypes.DWORD,
         ]
+        u32.ShowWindow.restype  = ctypes.c_bool
+        u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u32.GetWindowLongW.restype  = ctypes.c_long
+        u32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
         gdi32.CreateCompatibleDC.restype  = ctypes.c_void_p
         gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
         gdi32.CreateDIBSection.restype    = ctypes.c_void_p
@@ -364,13 +409,45 @@ class GameOverlay:
         gdi32.DeleteDC.restype        = ctypes.c_bool
         gdi32.DeleteDC.argtypes       = [ctypes.c_void_p]
 
+        # ── Diagnose window style ─────────────────────────────────────────────
+        ex_style = u32.GetWindowLongW(self._hwnd, -20)  # GWL_EXSTYLE
+        is_layered = bool(ex_style & 0x00080000)
+        print(f"[overlay] exstyle=0x{ex_style & 0xFFFFFFFF:08x} "
+              f"layered={is_layered} img={w}x{h}", flush=True)
+
+        # ── STEP 1: show window BEFORE UpdateLayeredWindow ────────────────────
+        # MSDN note: layered window should be in WS_VISIBLE state before ULW.
+        # Use SW_SHOWNOACTIVATE (4) so we don't steal keyboard focus.
+        u32.ShowWindow(self._hwnd, 4)
+
+        # ── STEP 2: position & size window (separate from ULW) ───────────────
+        # SetWindowPos without NOSIZE/NOMOVE so the window moves to the right
+        # place even before ULW paints anything.
+        SWP_NOACTIVATE = 0x0010
+        SWP_SHOWWINDOW = 0x0040
+        u32.SetWindowPos.restype  = ctypes.c_bool
+        u32.SetWindowPos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.UINT,
+        ]
+        u32.SetWindowPos(
+            self._hwnd, ctypes.c_void_p(-1),       # HWND_TOPMOST
+            win_x, win_y, w, h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        err_pos = k32.GetLastError()
+        if err_pos:
+            print(f"[overlay] SetWindowPos(pos) err={err_pos}", flush=True)
+
+        # ── STEP 3: build DIB with pixel data ────────────────────────────────
         hdc_screen = u32.GetDC(None)
         hdc_mem    = gdi32.CreateCompatibleDC(hdc_screen)
 
         bi = _BITMAPINFO()
         bi.bmiHeader.biSize      = ctypes.sizeof(_BITMAPINFOHEADER)
         bi.bmiHeader.biWidth     = w
-        bi.bmiHeader.biHeight    = -h
+        bi.bmiHeader.biHeight    = -h   # top-down DIB
         bi.bmiHeader.biPlanes    = 1
         bi.bmiHeader.biBitCount  = 32
         bi.bmiHeader.biSizeImage = 0
@@ -378,12 +455,15 @@ class GameOverlay:
         pBits = ctypes.c_void_p()
         hbm   = gdi32.CreateDIBSection(hdc_mem, ctypes.byref(bi), 0,
                                         ctypes.byref(pBits), None, 0)
-        if not hbm:
+        if not hbm or not pBits.value:
             gdi32.DeleteDC(hdc_mem)
             u32.ReleaseDC(None, hdc_screen)
+            print("[overlay] CreateDIBSection FAILED", flush=True)
             return False
 
-        ctypes.memmove(pBits, pixels, len(pixels))
+        # Copy premultiplied BGRA bytes into the DIB pixel buffer.
+        # Use .value to get the actual pointer address (not the address of pBits itself).
+        ctypes.memmove(pBits.value, pixels, len(pixels))
         old_bm = gdi32.SelectObject(hdc_mem, hbm)
 
         blend = _BLENDFUNCTION()
@@ -395,19 +475,32 @@ class GameOverlay:
         pt_src = _POINT(0, 0)
         sz     = _SIZE(w, h)
 
+        # ── STEP 4: UpdateLayeredWindow ───────────────────────────────────────
+        k32.SetLastError(0)
         ok = u32.UpdateLayeredWindow(
             self._hwnd, hdc_screen,
             ctypes.byref(pt_dst), ctypes.byref(sz),
             hdc_mem, ctypes.byref(pt_src),
-            0, ctypes.byref(blend), 2,   # ULW_ALPHA
+            0, ctypes.byref(blend), 2,   # ULW_ALPHA = 2
         )
+        err_ulw = k32.GetLastError()
+        print(f"[overlay] ulw={'OK' if ok else 'FAIL'} err={err_ulw} "
+              f"pos=({win_x},{win_y}) size={w}x{h}", flush=True)
 
         gdi32.SelectObject(hdc_mem, old_bm)
         gdi32.DeleteObject(hbm)
         gdi32.DeleteDC(hdc_mem)
         u32.ReleaseDC(None, hdc_screen)
 
-        # Show + re-assert topmost atomically
-        self._swp(0x0001 | 0x0002 | 0x0010 | 0x0040)  # NOSIZE|NOMOVE|NOACTIVATE|SHOW
+        # ── STEP 5: verify actual on-screen rect ─────────────────────────────
+        class _RECT(ctypes.Structure):
+            _fields_ = [("left",  ctypes.c_long), ("top",    ctypes.c_long),
+                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        rc = _RECT()
+        u32.GetWindowRect.restype  = ctypes.c_bool
+        u32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
+        u32.GetWindowRect(self._hwnd, ctypes.byref(rc))
+        print(f"[overlay] GetWindowRect=({rc.left},{rc.top})-"
+              f"({rc.right},{rc.bottom})", flush=True)
 
         return bool(ok)
