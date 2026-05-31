@@ -614,7 +614,8 @@ class TRTransApp:
 
     def _process_math(self, img):
         """OCR → arithmetic detection → show answer in popup.
-        Falls back to plain translation if no math is found.
+        Math mode always runs continuously (ignores auto_stop).
+        Falls back to plain translation display if no math is found.
         """
         text = self.ocr.extract_text(img).strip()
         if not text:
@@ -622,28 +623,22 @@ class TRTransApp:
             if self._no_text_count == 1 or self._no_text_count % 5 == 0:
                 self._log_threadsafe(
                     f"[擷取] 未偵測到文字（第 {self._no_text_count} 幀）")
+            # Reset last_text between rounds so the same equation can be
+            # shown again if it reappears in the next round.
+            if self._no_text_count >= 3:
+                self._last_text = ""
             return
 
         self._no_text_count = 0
-        self._log_threadsafe(
-            f"[OCR原] {text[:80]}{'…' if len(text) > 80 else ''}")
 
-        # Stability gate
-        threshold = 1 if self.config.get("auto_stop", True) else 2
-        if text == self._pending_text:
-            self._pending_count += 1
-        else:
-            self._pending_text = text
-            self._pending_count = 1
-
-        if self._pending_count < threshold:
-            self._log_threadsafe(
-                f"[穩定門] {self._pending_count}/{threshold}，等待下一幀…")
-            return
+        # No stability gate in math mode — respond on the first clean frame.
+        # (Large game text is consistently OCR'd; waiting wastes precious time.)
         if text == self._last_text:
-            return   # already handled
+            return                       # already showing this equation
 
         self._last_text = text
+        self._log_threadsafe(
+            f"[OCR] {text[:80]}{'…' if len(text) > 80 else ''}")
 
         # ── Try math first ────────────────────────────────────────────────────
         result = math_solve(text)
@@ -655,18 +650,14 @@ class TRTransApp:
             expr_pretty = expr.replace('*', '×').replace('/', '÷')
             self.root.after(
                 0, lambda e=expr_pretty, a=answer: self._answer_popup.show(e, a))
-            if self.config.get("auto_stop", True):
-                self.root.after(300, self._stop)
-            return
+            return   # keep running — no auto_stop in math mode
 
-        # ── No math: fall back to translation ────────────────────────────────
+        # ── No math: log the translation but don't stop ───────────────────────
         self._log_threadsafe("[算數] 未偵測到算式 → 嘗試翻譯...")
         translated = self.translator.translate_batch(
             [text], log_cb=self._log_threadsafe)[0]
         self._log_threadsafe(
             f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
-        if self.config.get("auto_stop", True):
-            self.root.after(0, self._stop)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
