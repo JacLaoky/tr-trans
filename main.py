@@ -40,8 +40,10 @@ class AnswerPopup:
         self._drag_sx = self._drag_sy = 0
         self._dragging = False
 
-    W_SINGLE = 240
-    W_DOUBLE = 460
+    # Width per column count; font size per column count
+    _W     = {1: 200, 2: 400, 4: 680}
+    _FSIZE = {1: 46,  2: 44,  4: 30}
+    _COLORS = ['#f9e2af', '#a6e3a1', '#89dceb', '#fab387']  # yellow green cyan orange
 
     # ── internals ─────────────────────────────────────────────────────────────
     def _saved_pos(self) -> tuple[int, int]:
@@ -49,7 +51,7 @@ class AnswerPopup:
         y = self.config.get("answer_popup_y", None)
         if x is None or y is None:
             sw = self.root.winfo_screenwidth()
-            x  = sw // 2 - self.W_SINGLE // 2
+            x  = sw // 2 - 200
             y  = 8
         return int(x), int(y)
 
@@ -76,67 +78,60 @@ class AnswerPopup:
             if self._dragging: self._save_pos()
             self._dragging = False
 
-        for widget in [w]:
-            widget.bind('<ButtonPress-1>',   _press)
-            widget.bind('<B1-Motion>',       _drag)
-            widget.bind('<ButtonRelease-1>', _release)
-            widget.bind('<Button-3>',        lambda _: self.hide())
+        w.bind('<ButtonPress-1>',   _press)
+        w.bind('<B1-Motion>',       _drag)
+        w.bind('<ButtonRelease-1>', _release)
+        w.bind('<Button-3>',        lambda _: self.hide())
 
-        border = tk.Frame(w, bg='#4a90d9', padx=2, pady=2)
-        border.pack(fill=tk.BOTH, expand=True)
-        inner = tk.Frame(border, bg='#0d0d1a')
-        inner.pack(fill=tk.BOTH, expand=True)
+        self._border = tk.Frame(w, bg='#4a90d9', padx=2, pady=2)
+        self._border.pack(fill=tk.BOTH, expand=True)
+        self._inner = tk.Frame(self._border, bg='#0d0d1a')
+        self._inner.pack(fill=tk.BOTH, expand=True)
 
-        # ── Left column (always visible) ──────────────────────────────────────
-        self._col_left = tk.Frame(inner, bg='#0d0d1a')
-        self._col_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._lbl_expr1 = tk.Label(self._col_left, text='', bg='#0d0d1a',
-                                   fg='#89b4fa', font=cjk_font(11))
-        self._lbl_expr1.pack(pady=(6, 0))
-        self._lbl_ans1 = tk.Label(self._col_left, text='', bg='#0d0d1a',
-                                  fg='#f9e2af', font=('Arial', 46, 'bold'))
-        self._lbl_ans1.pack(pady=(0, 6))
-
-        # ── Divider ───────────────────────────────────────────────────────────
-        self._divider = tk.Frame(inner, bg='#4a90d9', width=2)
-
-        # ── Right column (shown only for 2 results) ───────────────────────────
-        self._col_right = tk.Frame(inner, bg='#0d0d1a')
-        self._lbl_expr2 = tk.Label(self._col_right, text='', bg='#0d0d1a',
-                                   fg='#89b4fa', font=cjk_font(11))
-        self._lbl_expr2.pack(pady=(6, 0))
-        self._lbl_ans2 = tk.Label(self._col_right, text='', bg='#0d0d1a',
-                                  fg='#a6e3a1', font=('Arial', 46, 'bold'))
-        self._lbl_ans2.pack(pady=(0, 6))
+        # Pre-create 4 column slots + 3 dividers (show/hide as needed)
+        self._cols, self._lbl_es, self._lbl_as, self._divs = [], [], [], []
+        for i in range(4):
+            if i > 0:
+                d = tk.Frame(self._inner, bg='#4a90d9', width=2)
+                self._divs.append(d)
+            col = tk.Frame(self._inner, bg='#0d0d1a')
+            le = tk.Label(col, text='', bg='#0d0d1a', fg='#89b4fa', font=cjk_font(10))
+            le.pack(pady=(5, 0))
+            la = tk.Label(col, text='', bg='#0d0d1a',
+                          fg=self._COLORS[i], font=('Arial', 44, 'bold'))
+            la.pack(pady=(0, 5))
+            self._cols.append(col)
+            self._lbl_es.append(le)
+            self._lbl_as.append(la)
 
         x, y = self._saved_pos()
-        w.geometry(f'{self.W_SINGLE}x{self.H}+{x}+{y}')
+        w.geometry(f'200x{self.H}+{x}+{y}')
         self._win = w
+        self._last_ncols = 0
 
     # ── public API ────────────────────────────────────────────────────────────
     def show(self, results: list[tuple[str, str]], timeout_ms: int = 8000):
-        """results: list of (expression, answer) — 1 or 2 items."""
+        """results: list of (expression, answer) — 1, 2, or 4 items."""
         self._ensure_window()
+        n = min(len(results), 4)
+        fsize = self._FSIZE.get(n, 30)
+        total_w = self._W.get(n, 200)
 
-        expr1, ans1 = results[0]
-        self._lbl_expr1.config(text=expr1[:22])
-        self._lbl_ans1.config(text=ans1)
+        # Re-layout columns only when column count changes
+        if n != self._last_ncols:
+            for c in self._cols:  c.pack_forget()
+            for d in self._divs:  d.pack_forget()
+            for i in range(n):
+                if i > 0:
+                    self._divs[i-1].pack(side=tk.LEFT, fill=tk.Y, padx=1)
+                self._cols[i].pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            x, y = self._win.winfo_x(), self._win.winfo_y()
+            self._win.geometry(f'{total_w}x{self.H}+{x}+{y}')
+            self._last_ncols = n
 
-        if len(results) >= 2:
-            expr2, ans2 = results[1]
-            self._lbl_expr2.config(text=expr2[:22])
-            self._lbl_ans2.config(text=ans2)
-            # Show right column and divider
-            self._divider.pack(side=tk.LEFT, fill=tk.Y, padx=2)
-            self._col_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            x, y = self._win.winfo_x(), self._win.winfo_y()
-            self._win.geometry(f'{self.W_DOUBLE}x{self.H}+{x}+{y}')
-        else:
-            # Hide right column and divider, shrink window
-            self._divider.pack_forget()
-            self._col_right.pack_forget()
-            x, y = self._win.winfo_x(), self._win.winfo_y()
-            self._win.geometry(f'{self.W_SINGLE}x{self.H}+{x}+{y}')
+        for i, (expr, ans) in enumerate(results[:n]):
+            self._lbl_es[i].config(text=expr[:20])
+            self._lbl_as[i].config(text=ans, font=('Arial', fsize, 'bold'))
 
         self._win.deiconify()
         self._win.lift()

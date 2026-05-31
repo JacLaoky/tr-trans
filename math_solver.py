@@ -292,15 +292,20 @@ def solve(text: str) -> tuple[str, str] | None:
     return None
 
 
+def _div_fmt(v: float) -> str:
+    return str(int(v)) if v == int(v) else f'{v:.1f}'
+
+
 def solve_alternatives(text: str) -> list[tuple[str, str]]:
     """
-    Like solve(), but when the operator is - or /, also return the other
-    interpretation so the user can pick the right one by looking at the track.
+    Return 1 / 2 / 4 answer candidates.
 
-    Returns list of (display_expression, answer_str):
-      • always [primary]  for + and ×
-      • [sub_result, div_result]  when both make sense
-      • [primary]  if the alternative is not a clean integer
+    • +  ×          → 1 column  (no ambiguity)
+    • -  ÷  (no 1/7 digits)  → 2 columns: op1 | op2
+    • -  ÷  (has 1/7 digits) → 4 columns: op1_orig | op1_swap | op2_orig | op2_swap
+
+    For '-' detected:  columns = [−orig, −swap, ÷orig, ÷swap]
+    For '/' detected:  columns = [÷orig, ÷swap, −orig, −swap]
     """
     import re as _re
 
@@ -309,34 +314,48 @@ def solve_alternatives(text: str) -> list[tuple[str, str]]:
         return []
 
     expr, ans = primary
-
-    # Extract  a OP b  from the solved expression
     m = _re.search(r'(\d+)\s*([-/])\s*(\d+)', expr)
-    if not m:
+    if not m or m.group(2) not in ('-', '/'):
         return [primary]
 
-    a, op, b_s = int(m.group(1)), m.group(2), int(m.group(3))
-    if b_s == 0:
+    a_s, op, b_s = m.group(1), m.group(2), m.group(3)
+    a, b = int(a_s), int(b_s)
+    if b == 0:
         return [primary]
 
-    if op == '-':
-        # Subtraction → always also show ÷ (OCR may have confused the two)
-        div_v = a / b_s
-        div_str = str(int(div_v)) if div_v == int(div_v) else f'{div_v:.1f}'
-        return [
-            (f'{a} − {b_s}',  ans),
-            (f'{a} ÷ {b_s}',  div_str),
-        ]
+    # ── Find best single 1↔7 swap that gives integer ÷ ──────────────────────
+    a2_s, b2_s, found = a_s, b_s, False
+    for i, c in enumerate(a_s):
+        if c in '17':
+            na = a_s[:i] + ('7' if c == '1' else '1') + a_s[i+1:]
+            if int(na) / b == int(int(na) / b) and int(na) / b > 0:
+                a2_s = na;  found = True;  break
+    if not found:
+        for i, c in enumerate(b_s):
+            if c in '17':
+                nb = b_s[:i] + ('7' if c == '1' else '1') + b_s[i+1:]
+                bi = int(nb)
+                if bi > 1 and a / bi == int(a / bi) and a / bi > 0:
+                    b2_s = nb;  found = True;  break
+    a2, b2 = int(a2_s), int(b2_s)
 
-    elif op == '/':
-        # Division → always also show −
-        sub_v = a - b_s
-        return [
-            (f'{a} ÷ {b_s}',  ans),
-            (f'{a} − {b_s}',  str(sub_v)),
-        ]
+    sub1, sub2 = str(a - b),  str(a2 - b2)
+    div1, div2 = _div_fmt(a / b), _div_fmt(a2 / b2)
 
-    return [primary]
+    if found and (a2 != a or b2 != b):
+        # 4 columns
+        if op == '-':
+            return [(f'{a} − {b}',   sub1), (f'{a2} − {b2}', sub2),
+                    (f'{a} ÷ {b}',   div1), (f'{a2} ÷ {b2}', div2)]
+        else:
+            return [(f'{a} ÷ {b}',   ans),  (f'{a2} ÷ {b2}', div2),
+                    (f'{a} − {b}',   sub1), (f'{a2} − {b2}', sub2)]
+    else:
+        # 2 columns
+        if op == '-':
+            return [(f'{a} − {b}', sub1), (f'{a} ÷ {b}', div1)]
+        else:
+            return [(f'{a} ÷ {b}', ans),  (f'{a} − {b}', sub1)]
 
 
 # ── Quick test ────────────────────────────────────────────────────────────────
