@@ -65,16 +65,20 @@ def _normalise(text: str) -> str:
     t = text.replace('\n', ' ').replace('\r', ' ').strip()
 
     # ── Tales Runner golden game-font OCR misreads ────────────────────────────
-    # EasyOCR (Korean model) consistently maps these stylised symbols to
-    # specific Korean characters.  Fix them before any other processing.
+    # EasyOCR maps these stylised symbols to specific characters.
     _GAME_FONT = {
-        '응': '/',   # ÷ → 응  (divide sign misread)
-        '클': '=',   # = → 클  (equals sign misread)
-        'ㅡ': '-',   # ─ → ㅡ  (minus / long vowel confusion)
+        '응': '/',   # ÷ → 응  (Korean model)
+        '클': '=',   # = → 클  (Korean model)
+        'ㅡ': '-',   # ─ → ㅡ  (minus / long-vowel confusion)
         '곱': '*',   # 곱 sometimes appears for ×
     }
     for wrong, right in _GAME_FONT.items():
         t = t.replace(wrong, right)
+
+    # Period (with optional surrounding spaces) between digit groups → ÷
+    # Korean OCR reads ÷ as '.' in some font variants: "712 . 008" or "712.008"
+    # Tales Runner operands are always integers, so digit . digit = division.
+    t = re.sub(r'(\d)\s*\.\s*(\d)', r'\1/\2', t)
 
     # Korean multi-char numbers first (십일 before 십)
     for ko, num in sorted(_KO_MULTIDIGIT.items(), key=lambda p: -len(p[0])):
