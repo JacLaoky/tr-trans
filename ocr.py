@@ -84,6 +84,16 @@ class OCREngine:
         """Run Tesseract in single-line digit mode on a gold-mask image."""
         import pytesseract
         from PIL import Image as _PILImage
+        import os
+        # Common Tesseract install paths on Windows — try each in order
+        _TESS_PATHS = [
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+        ]
+        for p in _TESS_PATHS:
+            if os.path.exists(p):
+                pytesseract.pytesseract.tesseract_cmd = p
+                break
         pil = _PILImage.fromarray(gold)
         # psm 7 = single text line; whitelist to digits + common math operators
         cfg = (r'--psm 7 --oem 3 '
