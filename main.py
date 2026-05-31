@@ -17,6 +17,79 @@ from game_overlay import GameOverlay
 from region_selector import select_region
 from window_picker import pick_window
 from utils import cjk_font
+from math_solver import solve as math_solve
+
+
+class AnswerPopup:
+    """
+    Always-on-top window that shows a large math answer.
+    Uses a plain tkinter Toplevel with overrideredirect (no title bar),
+    which is far more reliable than the layered-window approach.
+    """
+    W, H = 240, 130
+
+    def __init__(self, root: tk.Tk):
+        self.root   = root
+        self._win: tk.Toplevel | None = None
+        self._lbl_expr: tk.Label | None = None
+        self._lbl_ans:  tk.Label | None = None
+        self._job: str | None = None
+
+    # ── internals ─────────────────────────────────────────────────────────────
+    def _ensure_window(self):
+        if self._win and self._win.winfo_exists():
+            return
+        w = tk.Toplevel(self.root)
+        w.overrideredirect(True)          # no title bar / decorations
+        w.attributes('-topmost', True)
+        w.attributes('-alpha', 0.93)
+        w.configure(bg='#0d0d1a', cursor='hand2')
+        w.bind('<Button-1>', lambda _: self.hide())
+
+        # Blue border frame
+        border = tk.Frame(w, bg='#4a90d9', padx=2, pady=2)
+        border.pack(fill=tk.BOTH, expand=True)
+        inner = tk.Frame(border, bg='#0d0d1a')
+        inner.pack(fill=tk.BOTH, expand=True)
+
+        # Small expression label
+        self._lbl_expr = tk.Label(
+            inner, text='', bg='#0d0d1a', fg='#89b4fa',
+            font=cjk_font(11),
+        )
+        self._lbl_expr.pack(pady=(6, 0))
+
+        # BIG answer label
+        self._lbl_ans = tk.Label(
+            inner, text='', bg='#0d0d1a', fg='#f9e2af',
+            font=('Arial', 48, 'bold'),
+        )
+        self._lbl_ans.pack(pady=(0, 6))
+
+        # Centre at top of screen
+        sw = self.root.winfo_screenwidth()
+        x  = sw // 2 - self.W // 2
+        w.geometry(f'{self.W}x{self.H}+{x}+8')
+        self._win = w
+
+    # ── public API ────────────────────────────────────────────────────────────
+    def show(self, expression: str, answer: str, timeout_ms: int = 8000):
+        self._ensure_window()
+        self._lbl_expr.config(text=expression[:32])
+        self._lbl_ans.config(text=answer)
+        self._win.deiconify()
+        self._win.lift()
+        if self._job:
+            self.root.after_cancel(self._job)
+        self._job = self.root.after(timeout_ms, self.hide)
+
+    def hide(self):
+        if self._win and self._win.winfo_exists():
+            self._win.withdraw()
+
+    def destroy(self):
+        if self._win and self._win.winfo_exists():
+            self._win.destroy()
 
 
 class TRTransApp:
@@ -48,6 +121,7 @@ class TRTransApp:
 
         self.root = tk.Tk()
         self._mode = tk.StringVar(value=self.config.get("mode", "inplace"))
+        self._answer_popup: AnswerPopup | None = None
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -97,18 +171,17 @@ class TRTransApp:
 
         # ── Mode ────────────────────────────────────────────────────────
         sec_mode = self._section(content, "翻譯模式")
-        tk.Radiobutton(
-            sec_mode, text="覆蓋原文位置", variable=self._mode, value="inplace",
-            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
-            activebackground=self.BG, font=cjk_font(10),
-            command=self._on_mode_change,
-        ).pack(side=tk.LEFT)
-        tk.Radiobutton(
-            sec_mode, text="浮窗面板", variable=self._mode, value="panel",
-            bg=self.BG, fg=self.FG, selectcolor=self.BG2,
-            activebackground=self.BG, font=cjk_font(10),
-            command=self._on_mode_change,
-        ).pack(side=tk.LEFT, padx=(16, 0))
+        for label, value in [
+            ("覆蓋原文位置", "inplace"),
+            ("浮窗面板",     "panel"),
+            ("🔢 算數",      "math"),
+        ]:
+            tk.Radiobutton(
+                sec_mode, text=label, variable=self._mode, value=value,
+                bg=self.BG, fg=self.FG, selectcolor=self.BG2,
+                activebackground=self.BG, font=cjk_font(10),
+                command=self._on_mode_change,
+            ).pack(side=tk.LEFT, padx=(0, 12))
 
         # ── Controls ────────────────────────────────────────────────────
         sec2 = self._section(content, "控制")
@@ -323,9 +396,15 @@ class TRTransApp:
                 self.game_overlay = GameOverlay()
             if self.overlay and self.overlay.win.winfo_exists():
                 self.overlay.win.withdraw()
-        else:
+        elif mode == "panel":
             if self.overlay is None or not self.overlay.win.winfo_exists():
                 self.overlay = TranslationOverlay(self.config, on_close=self._on_overlay_close)
+            if self.game_overlay and self.game_overlay.exists():
+                self.game_overlay.hide()
+        else:   # math mode
+            # Ensure the answer popup exists (created lazily in _process_math)
+            if self.overlay and self.overlay.win.winfo_exists():
+                self.overlay.win.withdraw()
             if self.game_overlay and self.game_overlay.exists():
                 self.game_overlay.hide()
 
@@ -336,7 +415,8 @@ class TRTransApp:
         self._set_status(True)
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self._log(f"開始翻譯（{'覆蓋模式' if mode == 'inplace' else '浮窗模式'}）...")
+        mode_labels = {"inplace": "覆蓋模式", "panel": "浮窗模式", "math": "算數模式"}
+        self._log(f"開始（{mode_labels.get(mode, mode)}）...")
 
     def _stop(self):
         self.running = False
@@ -392,6 +472,8 @@ class TRTransApp:
             self.overlay.win.destroy()
         if self.game_overlay and self.game_overlay.exists():
             self.game_overlay.destroy()
+        if self._answer_popup:
+            self._answer_popup.destroy()
         self.root.destroy()
 
     # ------------------------------------------------------------------ #
@@ -425,8 +507,11 @@ class TRTransApp:
                         time.sleep(0.2)
                         continue
 
-                if self._mode.get() == "inplace":
+                mode = self._mode.get()
+                if mode == "inplace":
                     self._process_inplace(img, region)
+                elif mode == "math":
+                    self._process_math(img)
                 else:
                     self._process_panel(img)
 
@@ -524,6 +609,62 @@ class TRTransApp:
         if translated and self.overlay:
             self.overlay.win.after(0, lambda t=translated, o=text: self.overlay.update_text(t, o))
             self._log_threadsafe(f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
+        if self.config.get("auto_stop", True):
+            self.root.after(0, self._stop)
+
+    def _process_math(self, img):
+        """OCR → arithmetic detection → show answer in popup.
+        Falls back to plain translation if no math is found.
+        """
+        text = self.ocr.extract_text(img).strip()
+        if not text:
+            self._no_text_count += 1
+            if self._no_text_count == 1 or self._no_text_count % 5 == 0:
+                self._log_threadsafe(
+                    f"[擷取] 未偵測到文字（第 {self._no_text_count} 幀）")
+            return
+
+        self._no_text_count = 0
+        self._log_threadsafe(
+            f"[OCR原] {text[:80]}{'…' if len(text) > 80 else ''}")
+
+        # Stability gate
+        threshold = 1 if self.config.get("auto_stop", True) else 2
+        if text == self._pending_text:
+            self._pending_count += 1
+        else:
+            self._pending_text = text
+            self._pending_count = 1
+
+        if self._pending_count < threshold:
+            self._log_threadsafe(
+                f"[穩定門] {self._pending_count}/{threshold}，等待下一幀…")
+            return
+        if text == self._last_text:
+            return   # already handled
+
+        self._last_text = text
+
+        # ── Try math first ────────────────────────────────────────────────────
+        result = math_solve(text)
+        if result:
+            expr, answer = result
+            self._log_threadsafe(f"[算數] {expr}  →  答案: {answer}")
+            if self._answer_popup is None:
+                self._answer_popup = AnswerPopup(self.root)
+            expr_pretty = expr.replace('*', '×').replace('/', '÷')
+            self.root.after(
+                0, lambda e=expr_pretty, a=answer: self._answer_popup.show(e, a))
+            if self.config.get("auto_stop", True):
+                self.root.after(300, self._stop)
+            return
+
+        # ── No math: fall back to translation ────────────────────────────────
+        self._log_threadsafe("[算數] 未偵測到算式 → 嘗試翻譯...")
+        translated = self.translator.translate_batch(
+            [text], log_cb=self._log_threadsafe)[0]
+        self._log_threadsafe(
+            f"[翻] {translated[:60]}{'…' if len(translated) > 60 else ''}")
         if self.config.get("auto_stop", True):
             self.root.after(0, self._stop)
 
