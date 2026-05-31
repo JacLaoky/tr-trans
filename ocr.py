@@ -59,16 +59,43 @@ class OCREngine:
         if log_cb:
             log_cb("OCR 模型載入完成。")
 
+    # ── Tesseract (number-specific OCR, optional) ─────────────────────────────
+    @staticmethod
+    def _tesseract_available() -> bool:
+        try:
+            import pytesseract
+            pytesseract.get_tesseract_version()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _gold_mask(img_bgr: np.ndarray) -> np.ndarray:
+        """Extract golden/orange game digits via HSV color mask, scaled 3×."""
+        hsv    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        mask   = cv2.inRange(hsv, np.array([8, 100, 120]), np.array([48, 255, 255]))
+        k5     = np.ones((5, 5), np.uint8)
+        filled = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
+        h, w   = filled.shape
+        return cv2.resize(filled, (w * 3, h * 3), interpolation=cv2.INTER_LANCZOS4)
+
+    @staticmethod
+    def _read_with_tesseract(gold: np.ndarray) -> str:
+        """Run Tesseract in single-line digit mode on a gold-mask image."""
+        import pytesseract
+        from PIL import Image as _PILImage
+        pil = _PILImage.fromarray(gold)
+        # psm 7 = single text line; whitelist to digits + common math operators
+        cfg = (r'--psm 7 --oem 3 '
+               r'-c tessedit_char_whitelist=0123456789+\-*/=?')
+        return pytesseract.image_to_string(pil, config=cfg).strip()
+
     def _ensure_math_loaded(self, log_cb=None):
-        """Lazily load English-only model for math mode.
-        English reads + - × correctly; ÷ becomes '-' but dual-column display
-        shows both interpretations so the correct answer is always visible.
-        English-only is significantly faster than en+ko combined.
-        """
+        """Lazily load English EasyOCR (fallback when Tesseract unavailable)."""
         if self._reader_en is not None:
             return
         if log_cb:
-            log_cb("[OCR] 載入算數模型（English）...")
+            log_cb("[OCR] 載入算數模型（English EasyOCR）...")
         import easyocr
         self._reader_en = easyocr.Reader(["en"], gpu=False, verbose=False)
         if log_cb:
@@ -76,24 +103,34 @@ class OCREngine:
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
         """
-        Smart two-stage OCR for math equations.
+        Number-focused OCR for math equations.
 
-        Stage 1 – English model (fast, good for +, -, ×):
-          If the parsed result contains '=' AND an arithmetic operator
-          → reliable read, return immediately (no Korean needed).
+        Preferred path – Tesseract (digit-specific model, fast, accurate):
+          Uses gold-mask preprocessing (isolates orange digits on black).
+          Restricted to digits + math operators.
+          If Tesseract gives a parseable equation → return immediately.
 
-        Stage 2 – Korean model (fallback, only for ÷):
-          English reads ÷ as '-' but loses '=' (e.g. '567-0093?').
-          If Stage 1 gives no operator or no '=', run Korean model.
-          Korean reads ÷ as '응' → substitution table converts it to '/'.
+        Fallback path – EasyOCR two-stage (when Tesseract not installed):
+          Stage 1: English model (good for +, -, ×).
+          Stage 2: Korean model (÷ reads as '응' → substitution → '/').
 
-        Net result:
-          +  -  ×  → English only  (1 OCR call, fast)
-          ÷        → English fails → Korean  (2 calls, slower but accurate)
+        Install Tesseract for best results:
+          Windows: https://github.com/UB-Mannheim/tesseract/wiki
+          then: pip install pytesseract
         """
         import re as _re
         from math_solver import solve as _solve
 
+        # ── Tesseract path (preferred) ────────────────────────────────────────
+        if self._tesseract_available():
+            gold = self._gold_mask(img_bgr)
+            text = self._read_with_tesseract(gold)
+            result = _solve(text)
+            if result and _re.search(r'[+\-*/]', result[0]):
+                return text
+            # Tesseract gave something but no clear operator → also try EasyOCR
+
+        # ── EasyOCR fallback ──────────────────────────────────────────────────
         self._ensure_math_loaded(log_cb)
         processed = _preprocess_for_ocr(img_bgr, scale=True)
 
@@ -104,17 +141,13 @@ class OCREngine:
 
         en_text   = _read(self._reader_en)
         en_result = _solve(en_text)
-
-        # English gave a complete, parseable equation with an operator → trust it
         if (en_result
                 and '=' in en_result[0]
                 and _re.search(r'[+\-*/]', en_result[0])):
             return en_text
 
-        # English failed or gave bare number → run Korean for ÷ detection
         self._ensure_loaded(log_cb)
-        ko_text = _read(self._reader)
-        return ko_text
+        return _read(self._reader)
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)
