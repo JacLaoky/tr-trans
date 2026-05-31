@@ -141,6 +141,60 @@ def _fmt(v) -> str:
     return str(v)
 
 
+def _fix_1_7(a_str: str, b_str: str, op: str):
+    """
+    OCR often confuses '1' and '7' in stylised game fonts.
+    For division, Tales Runner always uses clean integer answers.
+    If  a / b  is not an integer, try all single-digit 1↔7 swaps in
+    both operands until we find a pair that gives an integer quotient.
+
+    Returns (fixed_a_str, fixed_b_str, answer_int) or None.
+    Only applies to '/' because +,-,* always give integers anyway.
+
+    Priority: fix the dividend (a) first; fixing the divisor to ≤1 is
+    skipped (a÷1 is never a real game puzzle).
+    """
+    if op != '/':
+        return None
+
+    def single_swaps(s: str):
+        """Every version of s with exactly one 1↔7 flip (not the original)."""
+        for i, c in enumerate(s):
+            if c == '1':
+                yield s[:i] + '7' + s[i+1:]
+            elif c == '7':
+                yield s[:i] + '1' + s[i+1:]
+
+    b_int = int(b_str)
+
+    # ── Priority 1: fix only the dividend, keep divisor unchanged ──────────
+    for av in single_swaps(a_str):
+        q = int(av) / b_int
+        if q == int(q) and q > 0:
+            return av, b_str, int(q)
+
+    # ── Priority 2: fix only the divisor (skip trivial divisors ≤ 1) ──────
+    for bv in single_swaps(b_str):
+        bi = int(bv)
+        if bi <= 1:          # a÷1 = a is never a meaningful puzzle
+            continue
+        q = int(a_str) / bi
+        if q == int(q) and q > 0:
+            return a_str, bv, int(q)
+
+    # ── Priority 3: fix both simultaneously ────────────────────────────────
+    for av in single_swaps(a_str):
+        for bv in single_swaps(b_str):
+            bi = int(bv)
+            if bi <= 1:
+                continue
+            q = int(av) / bi
+            if q == int(q) and q > 0:
+                return av, bv, int(q)
+
+    return None
+
+
 def solve(text: str) -> tuple[str, str] | None:
     """
     Detect a math problem in *text* and return (short_expression, answer).
@@ -214,6 +268,14 @@ def solve(text: str) -> tuple[str, str] | None:
         lhs = m.group(1).strip()
         ans = _safe_eval(lhs)
         if ans is not None:
+            # For division: answer must be a positive integer (game design).
+            # If it isn't, OCR likely swapped 1 ↔ 7 — try all single swaps.
+            div_m = re.fullmatch(r'(\d+)\s*/\s*(\d+)', lhs.strip())
+            if div_m and (not isinstance(ans, int) or ans <= 0):
+                fix = _fix_1_7(div_m.group(1), div_m.group(2), '/')
+                if fix:
+                    fa, fb, fq = fix
+                    return (f'{fa} / {fb} = ?', str(fq))
             return (lhs + ' = ?', _fmt(ans))
 
     # ── Pattern 4:  bare expression  "3 + 5"  ────────────────────────────────
