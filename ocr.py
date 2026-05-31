@@ -135,10 +135,13 @@ class OCREngine:
         if self._tesseract_available():
             gold = self._gold_mask(img_bgr)
             text = self._read_with_tesseract(gold)
+            if log_cb:
+                log_cb(f"[OCR] Tesseract: {text!r}")
             result = _solve(text)
             if result and _re.search(r'[+\-*/]', result[0]):
                 return text
-            # Tesseract gave something but no clear operator → also try EasyOCR
+            if log_cb:
+                log_cb("[OCR] Tesseract 未解析到算式，改用 EasyOCR")
 
         # ── EasyOCR fallback ──────────────────────────────────────────────────
         self._ensure_math_loaded(log_cb)
