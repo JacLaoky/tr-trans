@@ -72,18 +72,19 @@ class OCREngine:
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
         """
-        Dual-pass OCR for math equations.
+        Dual-pass OCR optimised for math equations.
+        Does NOT rely on detecting '=?' — the expression itself is enough.
 
-        English model handles +, -, × well (reads operators as ASCII).
-        Korean model handles ÷ reliably (reads it as '응', which we substitute).
-
-        Strategy:
-          1. Run English model → try math_solve()
-          2. If result contains '=' (complete equation) → use it
-          3. Otherwise run Korean model → try math_solve()
-          4. If Korean gives complete equation → prefer it
-          5. Fall back to whichever gave any result
+        Operator-based routing:
+          • English model reads +, -, × as ASCII reliably.
+            If it finds + or ×  → use English result immediately.
+          • English OCR always misreads ÷ as '-'.
+            If it only finds '-' → fall through to Korean model.
+          • Korean model reads ÷ as '응' → our substitution table converts it.
+            If Korean finds '/' (was '응') → use Korean result.
+          • Fallback: whichever model gave any parseable result.
         """
+        import re
         from math_solver import solve as math_solve
 
         self._ensure_loaded(log_cb)
@@ -95,23 +96,27 @@ class OCREngine:
                                   contrast_ths=0.1, adjust_contrast=0.7)
             return " ".join(res).strip()
 
-        en_text = _read(self._reader_en)
+        en_text   = _read(self._reader_en)
         en_result = math_solve(en_text)
-        # English gives a complete match (has '=') → already good
-        if en_result and '=' in en_result[0]:
+
+        # English found + or × → trust it (reads these symbols accurately)
+        if en_result and re.search(r'[\+\*]', en_result[0]):
             return en_text
 
-        ko_text = _read(self._reader)
+        # English found '-' or failed → also run Korean (÷ detection)
+        ko_text   = _read(self._reader)
         ko_result = math_solve(ko_text)
-        if ko_result and '=' in ko_result[0]:
-            return ko_text          # Korean gives complete match (e.g. ÷ → 응 → /)
 
-        # Neither gave a complete equation — return whichever gave any result
+        # Korean found '/' → was '÷', substitution worked → prefer it
+        if ko_result and '/' in ko_result[0]:
+            return ko_text
+
+        # Fall back to whichever gave any result
         if en_result:
             return en_text
         if ko_result:
             return ko_text
-        return en_text              # last resort
+        return en_text
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)
