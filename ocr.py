@@ -97,7 +97,7 @@ class OCREngine:
         pil = _PILImage.fromarray(gold)
         # psm 7 = single text line; whitelist to digits + common math operators
         cfg = (r'--psm 7 --oem 3 '
-               r'-c tessedit_char_whitelist=0123456789+\-*/=?')
+               r'-c tessedit_char_whitelist=0123456789+\-*/')
         return pytesseract.image_to_string(pil, config=cfg).strip()
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
