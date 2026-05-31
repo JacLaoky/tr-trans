@@ -41,8 +41,8 @@ class AnswerPopup:
         self._dragging = False
 
     # Width per column count; font size per column count
-    _W     = {1: 200, 2: 400, 4: 680}
-    _FSIZE = {1: 46,  2: 44,  4: 30}
+    _W     = {1: 200, 2: 400, 3: 540, 4: 680}
+    _FSIZE = {1: 46,  2: 44,  3: 32,  4: 30}
     _COLORS = ['#f9e2af', '#a6e3a1', '#89dceb', '#fab387']  # yellow green cyan orange
 
     # ── internals ─────────────────────────────────────────────────────────────

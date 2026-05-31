@@ -405,41 +405,41 @@ def solve_alternatives(text: str) -> list[tuple[str, str]]:
 def solve_merged_digits(digits: str) -> list[tuple[str, str]]:
     """
     Called when Tesseract returns only digits (operator invisible/merged).
-    Finds the most central valid split and returns × and ÷ (if integer) answers.
-    e.g. '030006' → [('30 × 6', '180'), ('30 ÷ 6', '5')]
+    Finds the most central valid split and returns all 4 operator results
+    so the user can pick the correct one from the track.
+
+    e.g. '030006'  → [×180, ÷5,  +36,  −24]   (30 op 6)
+         '5644340' → [×191760, +904, −224]      (564 op 340, ÷ not integer)
     """
     n = len(digits)
     if n < 2:
         return []
     mid = n // 2
 
-    def _ok(left: str, right: str) -> tuple[int, int] | None:
+    def _ok(left: str, right: str):
         a = int(left.lstrip('0') or '0')
         b = int(right.lstrip('0') or '0')
-        if a > 0 and b > 0 and a <= 999 and b <= 999:
-            return a, b
-        return None
+        return (a, b) if 0 < a <= 999 and 0 < b <= 999 else None
+
+    def _build(a: int, b: int) -> list[tuple[str, str]]:
+        results = [(f'{a} × {b}', str(a * b))]
+        if b != 0 and a % b == 0:
+            results.append((f'{a} ÷ {b}', str(a // b)))
+        results.append((f'{a} + {b}', str(a + b)))
+        results.append((f'{a} − {b}', str(a - b)))
+        return results
 
     # Phase 1: simple split near centre
     for i in sorted(range(1, n), key=lambda x: abs(x - mid)):
         pair = _ok(digits[:i], digits[i:])
         if pair:
-            a, b = pair
-            results = [(f'{a} × {b}', str(a * b))]
-            if a % b == 0:
-                results.append((f'{a} ÷ {b}', str(a // b)))
-            return results
+            return _build(*pair)
 
-    # Phase 2: remove one spurious digit near centre (operator misread as digit)
+    # Phase 2: remove one spurious digit (operator misread as digit)
     for rm in sorted(range(1, n - 1), key=lambda x: abs(x - mid)):
-        left, right = digits[:rm], digits[rm + 1:]
-        pair = _ok(left, right)
+        pair = _ok(digits[:rm], digits[rm + 1:])
         if pair:
-            a, b = pair
-            results = [(f'{a} × {b}', str(a * b))]
-            if a % b == 0:
-                results.append((f'{a} ÷ {b}', str(a // b)))
-            return results
+            return _build(*pair)
 
     return []
 
