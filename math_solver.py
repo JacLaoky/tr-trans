@@ -64,6 +64,18 @@ def _normalise(text: str) -> str:
     """Replace Korean number words and operator names with ASCII equivalents."""
     t = text.replace('\n', ' ').replace('\r', ' ').strip()
 
+    # ── Tales Runner golden game-font OCR misreads ────────────────────────────
+    # EasyOCR (Korean model) consistently maps these stylised symbols to
+    # specific Korean characters.  Fix them before any other processing.
+    _GAME_FONT = {
+        '응': '/',   # ÷ → 응  (divide sign misread)
+        '클': '=',   # = → 클  (equals sign misread)
+        'ㅡ': '-',   # ─ → ㅡ  (minus / long vowel confusion)
+        '곱': '*',   # 곱 sometimes appears for ×
+    }
+    for wrong, right in _GAME_FONT.items():
+        t = t.replace(wrong, right)
+
     # Korean multi-char numbers first (십일 before 십)
     for ko, num in sorted(_KO_MULTIDIGIT.items(), key=lambda p: -len(p[0])):
         t = t.replace(ko, num)
