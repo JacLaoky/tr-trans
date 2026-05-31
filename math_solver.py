@@ -75,6 +75,11 @@ def _normalise(text: str) -> str:
     for wrong, right in _GAME_FONT.items():
         t = t.replace(wrong, right)
 
+    # '=' in the MIDDLE of the expression is likely a misread '-'
+    # e.g. OCR gives "567 = 009 = ?" → should be "567 - 009 = ?"
+    # Keep the final '=' (the one before '?' or at end of string).
+    t = re.sub(r'=(?!\s*\??$)', '-', t)
+
     # Period (with optional surrounding spaces) between digit groups → ÷
     # Korean OCR reads ÷ as '.' in some font variants: "712 . 008" or "712.008"
     # Tales Runner operands are always integers, so digit . digit = division.
