@@ -60,30 +60,61 @@ class OCREngine:
             log_cb("OCR 模型載入完成。")
 
     def _ensure_math_loaded(self, log_cb=None):
-        """Lazily load the combined en+ko model for math mode (single pass)."""
+        """Lazily load English-only model for math mode.
+        English reads + - × correctly; ÷ becomes '-' but dual-column display
+        shows both interpretations so the correct answer is always visible.
+        English-only is significantly faster than en+ko combined.
+        """
         if self._reader_en is not None:
             return
         if log_cb:
-            log_cb("[OCR] 載入算數模型（en+ko 單次掃描）...")
+            log_cb("[OCR] 載入算數模型（English）...")
         import easyocr
-        self._reader_en = easyocr.Reader(["en", "ko"], gpu=False, verbose=False)
+        self._reader_en = easyocr.Reader(["en"], gpu=False, verbose=False)
         if log_cb:
             log_cb("[OCR] 算數模型載入完成。")
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
         """
-        Single-pass OCR for math equations using combined en+ko model.
+        Smart two-stage OCR for math equations.
 
-        No dual-pass needed: whenever the result contains '-' or '/',
-        solve_alternatives() shows BOTH the subtraction AND division answers
-        side-by-side so the user picks the right one by looking at the track.
+        Stage 1 – English model (fast, good for +, -, ×):
+          If the parsed result contains '=' AND an arithmetic operator
+          → reliable read, return immediately (no Korean needed).
+
+        Stage 2 – Korean model (fallback, only for ÷):
+          English reads ÷ as '-' but loses '=' (e.g. '567-0093?').
+          If Stage 1 gives no operator or no '=', run Korean model.
+          Korean reads ÷ as '응' → substitution table converts it to '/'.
+
+        Net result:
+          +  -  ×  → English only  (1 OCR call, fast)
+          ÷        → English fails → Korean  (2 calls, slower but accurate)
         """
-        self._ensure_loaded(log_cb)
+        import re as _re
+        from math_solver import solve as _solve
+
         self._ensure_math_loaded(log_cb)
         processed = _preprocess_for_ocr(img_bgr, scale=True)
-        res = self._reader_en.readtext(processed, detail=0, paragraph=True,
-                                       contrast_ths=0.1, adjust_contrast=0.7)
-        return " ".join(res).strip()
+
+        def _read(reader):
+            res = reader.readtext(processed, detail=0, paragraph=True,
+                                  contrast_ths=0.1, adjust_contrast=0.7)
+            return " ".join(res).strip()
+
+        en_text   = _read(self._reader_en)
+        en_result = _solve(en_text)
+
+        # English gave a complete, parseable equation with an operator → trust it
+        if (en_result
+                and '=' in en_result[0]
+                and _re.search(r'[+\-*/]', en_result[0])):
+            return en_text
+
+        # English failed or gave bare number → run Korean for ÷ detection
+        self._ensure_loaded(log_cb)
+        ko_text = _read(self._reader)
+        return ko_text
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)
