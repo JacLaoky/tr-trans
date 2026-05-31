@@ -100,67 +100,19 @@ class OCREngine:
                r'-c tessedit_char_whitelist=0123456789+\-*/=?')
         return pytesseract.image_to_string(pil, config=cfg).strip()
 
-    def _ensure_math_loaded(self, log_cb=None):
-        """Lazily load English EasyOCR (fallback when Tesseract unavailable)."""
-        if self._reader_en is not None:
-            return
-        if log_cb:
-            log_cb("[OCR] 載入算數模型（English EasyOCR）...")
-        import easyocr
-        self._reader_en = easyocr.Reader(["en"], gpu=False, verbose=False)
-        if log_cb:
-            log_cb("[OCR] 算數模型載入完成。")
-
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
-        """
-        Number-focused OCR for math equations.
-
-        Preferred path – Tesseract (digit-specific model, fast, accurate):
-          Uses gold-mask preprocessing (isolates orange digits on black).
-          Restricted to digits + math operators.
-          If Tesseract gives a parseable equation → return immediately.
-
-        Fallback path – EasyOCR two-stage (when Tesseract not installed):
-          Stage 1: English model (good for +, -, ×).
-          Stage 2: Korean model (÷ reads as '응' → substitution → '/').
-
-        Install Tesseract for best results:
-          Windows: https://github.com/UB-Mannheim/tesseract/wiki
-          then: pip install pytesseract
-        """
-        import re as _re
-        from math_solver import solve as _solve
-
-        # ── Tesseract path (preferred) ────────────────────────────────────────
-        if self._tesseract_available():
-            gold = self._gold_mask(img_bgr)
-            text = self._read_with_tesseract(gold)
+        """Tesseract-only math OCR. Returns raw text for math_solver to parse."""
+        if not self._tesseract_available():
             if log_cb:
-                log_cb(f"[OCR] Tesseract: {text!r}")
-            result = _solve(text)
-            if result and _re.search(r'[+\-*/]', result[0]):
-                return text
-            if log_cb:
-                log_cb("[OCR] Tesseract 未解析到算式，改用 EasyOCR")
-
-        # ── EasyOCR fallback ──────────────────────────────────────────────────
-        self._ensure_math_loaded(log_cb)
-        processed = _preprocess_for_ocr(img_bgr, scale=True)
-
-        def _read(reader):
-            res = reader.readtext(processed, detail=0, paragraph=True,
-                                  contrast_ths=0.1, adjust_contrast=0.7)
-            return " ".join(res).strip()
-
-        en_text   = _read(self._reader_en)
-        en_result = _solve(en_text)
-        if (en_result
-                and '=' in en_result[0]
-                and _re.search(r'[+\-*/]', en_result[0])):
-            return en_text
-
-        self._ensure_loaded(log_cb)
-        return _read(self._reader)
+                log_cb("[OCR] 未偵測到 Tesseract，請安裝：\n"
+                       "  1. https://github.com/UB-Mannheim/tesseract/wiki\n"
+                       "  2. pip install pytesseract")
+            return ""
+        gold = self._gold_mask(img_bgr)
+        text = self._read_with_tesseract(gold)
+        if log_cb:
+            log_cb(f"[OCR] {text!r}")
+        return text
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)
