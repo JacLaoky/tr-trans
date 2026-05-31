@@ -17,7 +17,7 @@ from game_overlay import GameOverlay
 from region_selector import select_region
 from window_picker import pick_window
 from utils import cjk_font
-from math_solver import solve as math_solve
+from math_solver import solve as math_solve, solve_alternatives as math_solve_alt
 
 
 class AnswerPopup:
@@ -40,14 +40,16 @@ class AnswerPopup:
         self._drag_sx = self._drag_sy = 0
         self._dragging = False
 
+    W_SINGLE = 240
+    W_DOUBLE = 460
+
     # ── internals ─────────────────────────────────────────────────────────────
     def _saved_pos(self) -> tuple[int, int]:
-        """Return saved (x, y) or default top-centre."""
         x = self.config.get("answer_popup_x", None)
         y = self.config.get("answer_popup_y", None)
         if x is None or y is None:
             sw = self.root.winfo_screenwidth()
-            x  = sw // 2 - self.W // 2
+            x  = sw // 2 - self.W_SINGLE // 2
             y  = 8
         return int(x), int(y)
 
@@ -63,57 +65,79 @@ class AnswerPopup:
         w.overrideredirect(True)
         w.attributes('-topmost', True)
         w.attributes('-alpha', 0.93)
-        w.configure(bg='#0d0d1a', cursor='fleur')   # move cursor
+        w.configure(bg='#0d0d1a', cursor='fleur')
 
-        # ── drag to reposition ────────────────────────────────────────────────
         def _press(e):
-            self._drag_sx = e.x
-            self._drag_sy = e.y
-            self._dragging = False
-
+            self._drag_sx = e.x;  self._drag_sy = e.y;  self._dragging = False
         def _drag(e):
             self._dragging = True
-            nx = w.winfo_x() + e.x - self._drag_sx
-            ny = w.winfo_y() + e.y - self._drag_sy
-            w.geometry(f'+{nx}+{ny}')
-
+            w.geometry(f'+{w.winfo_x()+e.x-self._drag_sx}+{w.winfo_y()+e.y-self._drag_sy}')
         def _release(_e):
-            if self._dragging:
-                self._save_pos()   # persist new position
+            if self._dragging: self._save_pos()
             self._dragging = False
 
-        w.bind('<ButtonPress-1>',   _press)
-        w.bind('<B1-Motion>',       _drag)
-        w.bind('<ButtonRelease-1>', _release)
-        w.bind('<Button-3>',        lambda _: self.hide())   # right-click = close
+        for widget in [w]:
+            widget.bind('<ButtonPress-1>',   _press)
+            widget.bind('<B1-Motion>',       _drag)
+            widget.bind('<ButtonRelease-1>', _release)
+            widget.bind('<Button-3>',        lambda _: self.hide())
 
-        # ── layout ───────────────────────────────────────────────────────────
         border = tk.Frame(w, bg='#4a90d9', padx=2, pady=2)
         border.pack(fill=tk.BOTH, expand=True)
         inner = tk.Frame(border, bg='#0d0d1a')
         inner.pack(fill=tk.BOTH, expand=True)
 
-        self._lbl_expr = tk.Label(
-            inner, text='', bg='#0d0d1a', fg='#89b4fa',
-            font=cjk_font(11),
-        )
-        self._lbl_expr.pack(pady=(6, 0))
+        # ── Left column (always visible) ──────────────────────────────────────
+        self._col_left = tk.Frame(inner, bg='#0d0d1a')
+        self._col_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._lbl_expr1 = tk.Label(self._col_left, text='', bg='#0d0d1a',
+                                   fg='#89b4fa', font=cjk_font(11))
+        self._lbl_expr1.pack(pady=(6, 0))
+        self._lbl_ans1 = tk.Label(self._col_left, text='', bg='#0d0d1a',
+                                  fg='#f9e2af', font=('Arial', 46, 'bold'))
+        self._lbl_ans1.pack(pady=(0, 6))
 
-        self._lbl_ans = tk.Label(
-            inner, text='', bg='#0d0d1a', fg='#f9e2af',
-            font=('Arial', 48, 'bold'),
-        )
-        self._lbl_ans.pack(pady=(0, 6))
+        # ── Divider ───────────────────────────────────────────────────────────
+        self._divider = tk.Frame(inner, bg='#4a90d9', width=2)
+
+        # ── Right column (shown only for 2 results) ───────────────────────────
+        self._col_right = tk.Frame(inner, bg='#0d0d1a')
+        self._lbl_expr2 = tk.Label(self._col_right, text='', bg='#0d0d1a',
+                                   fg='#89b4fa', font=cjk_font(11))
+        self._lbl_expr2.pack(pady=(6, 0))
+        self._lbl_ans2 = tk.Label(self._col_right, text='', bg='#0d0d1a',
+                                  fg='#a6e3a1', font=('Arial', 46, 'bold'))
+        self._lbl_ans2.pack(pady=(0, 6))
 
         x, y = self._saved_pos()
-        w.geometry(f'{self.W}x{self.H}+{x}+{y}')
+        w.geometry(f'{self.W_SINGLE}x{self.H}+{x}+{y}')
         self._win = w
 
     # ── public API ────────────────────────────────────────────────────────────
-    def show(self, expression: str, answer: str, timeout_ms: int = 8000):
+    def show(self, results: list[tuple[str, str]], timeout_ms: int = 8000):
+        """results: list of (expression, answer) — 1 or 2 items."""
         self._ensure_window()
-        self._lbl_expr.config(text=expression[:32])
-        self._lbl_ans.config(text=answer)
+
+        expr1, ans1 = results[0]
+        self._lbl_expr1.config(text=expr1[:22])
+        self._lbl_ans1.config(text=ans1)
+
+        if len(results) >= 2:
+            expr2, ans2 = results[1]
+            self._lbl_expr2.config(text=expr2[:22])
+            self._lbl_ans2.config(text=ans2)
+            # Show right column and divider
+            self._divider.pack(side=tk.LEFT, fill=tk.Y, padx=2)
+            self._col_right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            x, y = self._win.winfo_x(), self._win.winfo_y()
+            self._win.geometry(f'{self.W_DOUBLE}x{self.H}+{x}+{y}')
+        else:
+            # Hide right column and divider, shrink window
+            self._divider.pack_forget()
+            self._col_right.pack_forget()
+            x, y = self._win.winfo_x(), self._win.winfo_y()
+            self._win.geometry(f'{self.W_SINGLE}x{self.H}+{x}+{y}')
+
         self._win.deiconify()
         self._win.lift()
         if self._job:
@@ -683,15 +707,17 @@ class TRTransApp:
             f"[OCR] {text[:80]}{'…' if len(text) > 80 else ''}")
 
         # ── Try math first ────────────────────────────────────────────────────
-        result = math_solve(text)
-        if result:
-            expr, answer = result
-            self._log_threadsafe(f"[算數] {expr}  →  答案: {answer}")
+        results = math_solve_alt(text)
+        if results:
             if self._answer_popup is None:
                 self._answer_popup = AnswerPopup(self.root, self.config)
-            expr_pretty = expr.replace('*', '×').replace('/', '÷')
+            # Pretty-print operator symbols
+            pretty = [(e.replace('*', '×').replace('/', '÷'), a)
+                      for e, a in results]
+            log_str = '  |  '.join(f'{e} = {a}' for e, a in pretty)
+            self._log_threadsafe(f"[算數] {log_str}")
             self.root.after(
-                0, lambda e=expr_pretty, a=answer: self._answer_popup.show(e, a))
+                0, lambda p=pretty: self._answer_popup.show(p))
             return   # keep running — no auto_stop in math mode
 
         # ── No math: log the translation but don't stop ───────────────────────

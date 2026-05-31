@@ -292,6 +292,53 @@ def solve(text: str) -> tuple[str, str] | None:
     return None
 
 
+def solve_alternatives(text: str) -> list[tuple[str, str]]:
+    """
+    Like solve(), but when the operator is - or /, also return the other
+    interpretation so the user can pick the right one by looking at the track.
+
+    Returns list of (display_expression, answer_str):
+      • always [primary]  for + and ×
+      • [sub_result, div_result]  when both make sense
+      • [primary]  if the alternative is not a clean integer
+    """
+    import re as _re
+
+    primary = solve(text)
+    if not primary:
+        return []
+
+    expr, ans = primary
+
+    # Extract  a OP b  from the solved expression
+    m = _re.search(r'(\d+)\s*([-/])\s*(\d+)', expr)
+    if not m:
+        return [primary]
+
+    a, op, b_s = int(m.group(1)), m.group(2), int(m.group(3))
+    if b_s == 0:
+        return [primary]
+
+    if op == '-':
+        # Primary is subtraction → also show division (if integer)
+        div_v = a / b_s
+        if div_v == int(div_v) and div_v > 0:
+            return [
+                (f'{a} − {b_s}',  ans),
+                (f'{a} ÷ {b_s}',  str(int(div_v))),
+            ]
+
+    elif op == '/':
+        # Primary is division → also show subtraction
+        sub_v = a - b_s
+        return [
+            (f'{a} ÷ {b_s}',  ans),
+            (f'{a} − {b_s}',  str(sub_v)),
+        ]
+
+    return [primary]
+
+
 # ── Quick test ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     tests = [
