@@ -145,17 +145,6 @@ class OCREngine:
             return ""
         gold = self._gold_mask(img_bgr)
         text = self._read_with_tesseract(gold)
-
-        # If Tesseract still returns only digits (operator was invisible),
-        # try to split the merged string at each position and see which
-        # split gives integer division — insert '/' there.
-        import re as _re
-        if text and _re.fullmatch(r'[\d\s]+', text):
-            digits = text.replace(' ', '')
-            best = _split_as_division(digits)
-            if best:
-                text = best
-
         if log_cb:
             log_cb(f"[OCR] {text!r}")
         return text

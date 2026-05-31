@@ -17,7 +17,7 @@ from game_overlay import GameOverlay
 from region_selector import select_region
 from window_picker import pick_window
 from utils import cjk_font
-from math_solver import solve as math_solve, solve_alternatives as math_solve_alt
+from math_solver import solve as math_solve, solve_alternatives as math_solve_alt, solve_merged_digits
 
 
 class AnswerPopup:
@@ -714,7 +714,19 @@ class TRTransApp:
         self._log_threadsafe(
             f"[OCR] {text[:80]}{'…' if len(text) > 80 else ''}")
 
-        # ── Try math first ────────────────────────────────────────────────────
+        # ── Digits-only: operator was invisible/merged → show × and ÷ ────────
+        import re as _re
+        if _re.fullmatch(r'[\d\s]+', text.strip()):
+            results = solve_merged_digits(text.replace(' ', ''))
+            if results:
+                pretty = [(e.replace('*', '×'), a) for e, a in results]
+                self._log_threadsafe(f"[算數-合并] {' | '.join(f'{e}={a}' for e,a in pretty)}")
+                if self._answer_popup is None:
+                    self._answer_popup = AnswerPopup(self.root, self.config)
+                self.root.after(0, lambda p=pretty: self._answer_popup.show(p))
+                return
+
+        # ── Normal: has operator → parse and solve ────────────────────────────
         results = math_solve_alt(text)
         if results:
             if self._answer_popup is None:
