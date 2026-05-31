@@ -422,11 +422,12 @@ def solve_merged_digits(digits: str) -> list[tuple[str, str]]:
         return (a, b) if 0 < a <= 999 and 0 < b <= 999 else None
 
     def _build(a: int, b: int) -> list[tuple[str, str]]:
+        # Tesseract reads '-' correctly so subtraction is handled normally.
+        # Only show the operators that are invisible to Tesseract: × ÷ +
         results = [(f'{a} × {b}', str(a * b))]
         if b != 0 and a % b == 0:
             results.append((f'{a} ÷ {b}', str(a // b)))
         results.append((f'{a} + {b}', str(a + b)))
-        results.append((f'{a} − {b}', str(a - b)))
         return results
 
     # Phase 1: simple split near centre
