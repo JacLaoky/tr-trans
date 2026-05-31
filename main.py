@@ -161,7 +161,7 @@ class TRTransApp:
     def __init__(self):
         self.config = Config()
         self.capture = ScreenCapture()
-        self.ocr = OCREngine()
+        self.ocr = OCREngine(config=self.config)
         self.translator = TranslationEngine(config=self.config)
         self.overlay: TranslationOverlay | None = None
         self.game_overlay: GameOverlay | None = None
@@ -303,6 +303,21 @@ class TRTransApp:
             bg=self.BG, fg=self.FG, selectcolor=self.BG2,
             activebackground=self.BG, font=cjk_font(9),
         ).pack(anchor="w")
+
+        # Tesseract path (for math mode)
+        tess_row = tk.Frame(sec_ocr, bg=self.BG)
+        tess_row.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(tess_row, text="Tesseract 路徑:", bg=self.BG, fg=self.FG,
+                 font=cjk_font(9)).pack(side=tk.LEFT)
+        self._tess_var = tk.StringVar(value=self.config.get("tesseract_path", ""))
+        tk.Entry(
+            tess_row, textvariable=self._tess_var,
+            bg=self.BG2, fg=self.FG, insertbackground="white",
+            relief=tk.FLAT, font=("Consolas", 8), width=38,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Label(tess_row,
+                 text="（例：C:\\Program Files\\Tesseract-OCR\\tesseract.exe）",
+                 bg=self.BG, fg='#6c7086', font=("Consolas", 7)).pack(anchor="w", padx=(6, 0))
 
         # ── Settings ────────────────────────────────────────────────────
         sec3 = self._section(content, "其他設定")
@@ -505,6 +520,10 @@ class TRTransApp:
         hanzi = self._hanzi_var.get()
         self.config.set("ocr_hanzi", hanzi)
         self.ocr.set_hanzi(hanzi)
+        tess = self._tess_var.get().strip()
+        self.config.set("tesseract_path", tess)
+        if tess:
+            self._log(f"[設定] Tesseract 路徑: {tess}")
         if not hanzi:
             self._ocr_ready = False  # reload without ch_sim next start
         self.translator.update_config(self.config)

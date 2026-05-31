@@ -23,6 +23,7 @@ DEFAULTS = {
     "history_size": 6,
     "answer_popup_x": None,   # saved by dragging the answer popup
     "answer_popup_y": None,
+    "tesseract_path": "",     # e.g. C:\Program Files\Tesseract-OCR\tesseract.exe
 }
 
 

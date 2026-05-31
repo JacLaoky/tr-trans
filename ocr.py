@@ -4,11 +4,12 @@ import sys
 
 
 class OCREngine:
-    def __init__(self):
+    def __init__(self, config=None):
         self._reader    = None          # Korean model (translation + ÷ detection)
         self._reader_en = None          # English model (math +/-/× detection)
         self._langs     = ["ko"]        # default: Korean only
         self._use_hanzi = False
+        self._config    = config        # optional Config for tesseract_path
 
     def set_hanzi(self, enabled: bool):
         """Enable/disable Chinese character (漢字) recognition.
@@ -60,10 +61,13 @@ class OCREngine:
             log_cb("OCR 模型載入完成。")
 
     # ── Tesseract (number-specific OCR, optional) ─────────────────────────────
-    @staticmethod
-    def _tesseract_available() -> bool:
+    def _tesseract_available(self) -> bool:
         try:
             import pytesseract
+            # Apply user-configured path if set
+            path = self._config.get("tesseract_path", "") if self._config else ""
+            if path and path.strip():
+                pytesseract.pytesseract.tesseract_cmd = path.strip()
             pytesseract.get_tesseract_version()
             return True
         except Exception:
@@ -84,16 +88,6 @@ class OCREngine:
         """Run Tesseract in single-line digit mode on a gold-mask image."""
         import pytesseract
         from PIL import Image as _PILImage
-        import os
-        # Common Tesseract install paths on Windows — try each in order
-        _TESS_PATHS = [
-            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        ]
-        for p in _TESS_PATHS:
-            if os.path.exists(p):
-                pytesseract.pytesseract.tesseract_cmd = p
-                break
         pil = _PILImage.fromarray(gold)
         # psm 7 = single text line; whitelist to digits + common math operators
         cfg = (r'--psm 7 --oem 3 '
