@@ -5,8 +5,9 @@ import sys
 
 class OCREngine:
     def __init__(self):
-        self._reader = None
-        self._langs = ["ko"]          # default: Korean only
+        self._reader    = None          # Korean model (translation + ÷ detection)
+        self._reader_en = None          # English model (math +/-/× detection)
+        self._langs     = ["ko"]        # default: Korean only
         self._use_hanzi = False
 
     def set_hanzi(self, enabled: bool):
@@ -57,6 +58,60 @@ class OCREngine:
 
         if log_cb:
             log_cb("OCR 模型載入完成。")
+
+    def _ensure_en_loaded(self, log_cb=None):
+        """Lazily load the English OCR model (used for math mode)."""
+        if self._reader_en is not None:
+            return
+        if log_cb:
+            log_cb("[OCR] 載入英文模型（算數模式用）...")
+        import easyocr
+        self._reader_en = easyocr.Reader(["en"], gpu=False, verbose=False)
+        if log_cb:
+            log_cb("[OCR] 英文模型載入完成。")
+
+    def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
+        """
+        Dual-pass OCR for math equations.
+
+        English model handles +, -, × well (reads operators as ASCII).
+        Korean model handles ÷ reliably (reads it as '응', which we substitute).
+
+        Strategy:
+          1. Run English model → try math_solve()
+          2. If result contains '=' (complete equation) → use it
+          3. Otherwise run Korean model → try math_solve()
+          4. If Korean gives complete equation → prefer it
+          5. Fall back to whichever gave any result
+        """
+        from math_solver import solve as math_solve
+
+        self._ensure_loaded(log_cb)
+        self._ensure_en_loaded(log_cb)
+        processed = _preprocess_for_ocr(img_bgr, scale=True)
+
+        def _read(reader):
+            res = reader.readtext(processed, detail=0, paragraph=True,
+                                  contrast_ths=0.1, adjust_contrast=0.7)
+            return " ".join(res).strip()
+
+        en_text = _read(self._reader_en)
+        en_result = math_solve(en_text)
+        # English gives a complete match (has '=') → already good
+        if en_result and '=' in en_result[0]:
+            return en_text
+
+        ko_text = _read(self._reader)
+        ko_result = math_solve(ko_text)
+        if ko_result and '=' in ko_result[0]:
+            return ko_text          # Korean gives complete match (e.g. ÷ → 응 → /)
+
+        # Neither gave a complete equation — return whichever gave any result
+        if en_result:
+            return en_text
+        if ko_result:
+            return ko_text
+        return en_text              # last resort
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)

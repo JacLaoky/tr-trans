@@ -410,6 +410,12 @@ class TRTransApp:
 
         # Apply current OCR hanzi setting before starting
         self.ocr.set_hanzi(self.config.get("ocr_hanzi", False))
+        # Pre-load English model in background when math mode is selected
+        if mode == "math":
+            threading.Thread(
+                target=lambda: self.ocr._ensure_en_loaded(self._log_threadsafe),
+                daemon=True,
+            ).start()
 
         self.running = True
         self._set_status(True)
@@ -617,7 +623,7 @@ class TRTransApp:
         Math mode always runs continuously (ignores auto_stop).
         Falls back to plain translation display if no math is found.
         """
-        text = self.ocr.extract_text(img).strip()
+        text = self.ocr.extract_text_math(img, log_cb=self._log_threadsafe).strip()
         if not text:
             self._no_text_count += 1
             if self._no_text_count == 1 or self._no_text_count % 5 == 0:
@@ -632,7 +638,6 @@ class TRTransApp:
         self._no_text_count = 0
 
         # No stability gate in math mode — respond on the first clean frame.
-        # (Large game text is consistently OCR'd; waiting wastes precious time.)
         if text == self._last_text:
             return                       # already showing this equation
 
