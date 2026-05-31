@@ -471,10 +471,10 @@ class TRTransApp:
 
         # Apply current OCR hanzi setting before starting
         self.ocr.set_hanzi(self.config.get("ocr_hanzi", False))
-        # Pre-load English model in background when math mode is selected
+        # Pre-load combined en+ko math model in background
         if mode == "math":
             threading.Thread(
-                target=lambda: self.ocr._ensure_en_loaded(self._log_threadsafe),
+                target=lambda: self.ocr._ensure_math_loaded(self._log_threadsafe),
                 daemon=True,
             ).start()
 

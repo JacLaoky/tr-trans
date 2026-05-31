@@ -59,64 +59,31 @@ class OCREngine:
         if log_cb:
             log_cb("OCR 模型載入完成。")
 
-    def _ensure_en_loaded(self, log_cb=None):
-        """Lazily load the English OCR model (used for math mode)."""
+    def _ensure_math_loaded(self, log_cb=None):
+        """Lazily load the combined en+ko model for math mode (single pass)."""
         if self._reader_en is not None:
             return
         if log_cb:
-            log_cb("[OCR] 載入英文模型（算數模式用）...")
+            log_cb("[OCR] 載入算數模型（en+ko 單次掃描）...")
         import easyocr
-        self._reader_en = easyocr.Reader(["en"], gpu=False, verbose=False)
+        self._reader_en = easyocr.Reader(["en", "ko"], gpu=False, verbose=False)
         if log_cb:
-            log_cb("[OCR] 英文模型載入完成。")
+            log_cb("[OCR] 算數模型載入完成。")
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
         """
-        Dual-pass OCR optimised for math equations.
-        Does NOT rely on detecting '=?' — the expression itself is enough.
+        Single-pass OCR for math equations using combined en+ko model.
 
-        Operator-based routing:
-          • English model reads +, -, × as ASCII reliably.
-            If it finds + or ×  → use English result immediately.
-          • English OCR always misreads ÷ as '-'.
-            If it only finds '-' → fall through to Korean model.
-          • Korean model reads ÷ as '응' → our substitution table converts it.
-            If Korean finds '/' (was '응') → use Korean result.
-          • Fallback: whichever model gave any parseable result.
+        No dual-pass needed: whenever the result contains '-' or '/',
+        solve_alternatives() shows BOTH the subtraction AND division answers
+        side-by-side so the user picks the right one by looking at the track.
         """
-        import re
-        from math_solver import solve as math_solve
-
         self._ensure_loaded(log_cb)
-        self._ensure_en_loaded(log_cb)
+        self._ensure_math_loaded(log_cb)
         processed = _preprocess_for_ocr(img_bgr, scale=True)
-
-        def _read(reader):
-            res = reader.readtext(processed, detail=0, paragraph=True,
-                                  contrast_ths=0.1, adjust_contrast=0.7)
-            return " ".join(res).strip()
-
-        en_text   = _read(self._reader_en)
-        en_result = math_solve(en_text)
-
-        # English found + or × → trust it (reads these symbols accurately)
-        if en_result and re.search(r'[\+\*]', en_result[0]):
-            return en_text
-
-        # English found '-' or failed → also run Korean (÷ detection)
-        ko_text   = _read(self._reader)
-        ko_result = math_solve(ko_text)
-
-        # Korean found '/' → was '÷', substitution worked → prefer it
-        if ko_result and '/' in ko_result[0]:
-            return ko_text
-
-        # Fall back to whichever gave any result
-        if en_result:
-            return en_text
-        if ko_result:
-            return ko_text
-        return en_text
+        res = self._reader_en.readtext(processed, detail=0, paragraph=True,
+                                       contrast_ths=0.1, adjust_contrast=0.7)
+        return " ".join(res).strip()
 
     def extract_text(self, img_bgr: np.ndarray, log_cb=None) -> str:
         self._ensure_loaded(log_cb)

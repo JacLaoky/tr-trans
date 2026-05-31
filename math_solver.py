@@ -320,16 +320,16 @@ def solve_alternatives(text: str) -> list[tuple[str, str]]:
         return [primary]
 
     if op == '-':
-        # Primary is subtraction → also show division (if integer)
+        # Subtraction → always also show ÷ (OCR may have confused the two)
         div_v = a / b_s
-        if div_v == int(div_v) and div_v > 0:
-            return [
-                (f'{a} − {b_s}',  ans),
-                (f'{a} ÷ {b_s}',  str(int(div_v))),
-            ]
+        div_str = str(int(div_v)) if div_v == int(div_v) else f'{div_v:.1f}'
+        return [
+            (f'{a} − {b_s}',  ans),
+            (f'{a} ÷ {b_s}',  div_str),
+        ]
 
     elif op == '/':
-        # Primary is division → also show subtraction
+        # Division → always also show −
         sub_v = a - b_s
         return [
             (f'{a} ÷ {b_s}',  ans),
