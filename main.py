@@ -23,53 +23,90 @@ from math_solver import solve as math_solve
 class AnswerPopup:
     """
     Always-on-top window that shows a large math answer.
-    Uses a plain tkinter Toplevel with overrideredirect (no title bar),
-    which is far more reliable than the layered-window approach.
+    • Drag  to reposition (position saved to config automatically).
+    • Right-click  to close immediately.
+    • Auto-dismisses after timeout.
     """
     W, H = 240, 130
 
-    def __init__(self, root: tk.Tk):
-        self.root   = root
+    def __init__(self, root: tk.Tk, config):
+        self.root    = root
+        self.config  = config
         self._win: tk.Toplevel | None = None
         self._lbl_expr: tk.Label | None = None
         self._lbl_ans:  tk.Label | None = None
         self._job: str | None = None
+        # Drag state
+        self._drag_sx = self._drag_sy = 0
+        self._dragging = False
 
     # ── internals ─────────────────────────────────────────────────────────────
+    def _saved_pos(self) -> tuple[int, int]:
+        """Return saved (x, y) or default top-centre."""
+        x = self.config.get("answer_popup_x", None)
+        y = self.config.get("answer_popup_y", None)
+        if x is None or y is None:
+            sw = self.root.winfo_screenwidth()
+            x  = sw // 2 - self.W // 2
+            y  = 8
+        return int(x), int(y)
+
+    def _save_pos(self):
+        if self._win and self._win.winfo_exists():
+            self.config.set("answer_popup_x", self._win.winfo_x())
+            self.config.set("answer_popup_y", self._win.winfo_y())
+
     def _ensure_window(self):
         if self._win and self._win.winfo_exists():
             return
         w = tk.Toplevel(self.root)
-        w.overrideredirect(True)          # no title bar / decorations
+        w.overrideredirect(True)
         w.attributes('-topmost', True)
         w.attributes('-alpha', 0.93)
-        w.configure(bg='#0d0d1a', cursor='hand2')
-        w.bind('<Button-1>', lambda _: self.hide())
+        w.configure(bg='#0d0d1a', cursor='fleur')   # move cursor
 
-        # Blue border frame
+        # ── drag to reposition ────────────────────────────────────────────────
+        def _press(e):
+            self._drag_sx = e.x
+            self._drag_sy = e.y
+            self._dragging = False
+
+        def _drag(e):
+            self._dragging = True
+            nx = w.winfo_x() + e.x - self._drag_sx
+            ny = w.winfo_y() + e.y - self._drag_sy
+            w.geometry(f'+{nx}+{ny}')
+
+        def _release(_e):
+            if self._dragging:
+                self._save_pos()   # persist new position
+            self._dragging = False
+
+        w.bind('<ButtonPress-1>',   _press)
+        w.bind('<B1-Motion>',       _drag)
+        w.bind('<ButtonRelease-1>', _release)
+        w.bind('<Button-3>',        lambda _: self.hide())   # right-click = close
+
+        # ── layout ───────────────────────────────────────────────────────────
         border = tk.Frame(w, bg='#4a90d9', padx=2, pady=2)
         border.pack(fill=tk.BOTH, expand=True)
         inner = tk.Frame(border, bg='#0d0d1a')
         inner.pack(fill=tk.BOTH, expand=True)
 
-        # Small expression label
         self._lbl_expr = tk.Label(
             inner, text='', bg='#0d0d1a', fg='#89b4fa',
             font=cjk_font(11),
         )
         self._lbl_expr.pack(pady=(6, 0))
 
-        # BIG answer label
         self._lbl_ans = tk.Label(
             inner, text='', bg='#0d0d1a', fg='#f9e2af',
             font=('Arial', 48, 'bold'),
         )
         self._lbl_ans.pack(pady=(0, 6))
 
-        # Centre at top of screen
-        sw = self.root.winfo_screenwidth()
-        x  = sw // 2 - self.W // 2
-        w.geometry(f'{self.W}x{self.H}+{x}+8')
+        x, y = self._saved_pos()
+        w.geometry(f'{self.W}x{self.H}+{x}+{y}')
         self._win = w
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -651,7 +688,7 @@ class TRTransApp:
             expr, answer = result
             self._log_threadsafe(f"[算數] {expr}  →  答案: {answer}")
             if self._answer_popup is None:
-                self._answer_popup = AnswerPopup(self.root)
+                self._answer_popup = AnswerPopup(self.root, self.config)
             expr_pretty = expr.replace('*', '×').replace('/', '÷')
             self.root.after(
                 0, lambda e=expr_pretty, a=answer: self._answer_popup.show(e, a))

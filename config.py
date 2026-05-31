@@ -21,6 +21,8 @@ DEFAULTS = {
     "overlay_y": 10,
     "overlay_width": 420,
     "history_size": 6,
+    "answer_popup_x": None,   # saved by dragging the answer popup
+    "answer_popup_y": None,
 }
 
 
