@@ -84,6 +84,18 @@ def _normalise(text: str) -> str:
     # Replace unknown-placeholder chars with '?'
     t = _UNK_RE.sub('?', t)
 
+    # Collapse spaces between consecutive digits (OCR sometimes splits "348" → "3 4 8")
+    # Apply repeatedly for long sequences like "0 0 4"
+    for _ in range(6):
+        t2 = re.sub(r'(\d) (\d)', r'\1\2', t)
+        if t2 == t:
+            break
+        t = t2
+
+    # Strip leading zeros so Python eval accepts them: 004 → 4, 0012 → 12
+    # (only when preceded by a non-digit and followed by a non-zero digit)
+    t = re.sub(r'(?<![.\d])0+(?=[1-9])', '', t)
+
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
