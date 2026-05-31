@@ -3,6 +3,30 @@ import numpy as np
 import sys
 
 
+def _split_as_division(digits: str) -> str | None:
+    """
+    When Tesseract merges 'A÷B' into 'AB' (operator invisible), try every
+    split point and return 'A/B' for the first split where A÷B is a positive
+    integer.  Prefers splits near the middle (most likely location).
+    Returns None if no clean integer division found.
+    """
+    n = len(digits)
+    if n < 2:
+        return None
+    # Try splits ordered by distance from centre (most likely first)
+    mid = n // 2
+    indices = sorted(range(1, n), key=lambda i: abs(i - mid))
+    for i in indices:
+        a_s = digits[:i].lstrip('0') or '0'
+        b_s = digits[i:].lstrip('0') or '0'
+        a, b = int(a_s), int(b_s)
+        if b == 0:
+            continue
+        if a % b == 0 and a > 0:
+            return f'{digits[:i]}/{digits[i:]}'
+    return None
+
+
 class OCREngine:
     def __init__(self, config=None):
         self._reader    = None          # Korean model (translation + ÷ detection)
@@ -75,11 +99,14 @@ class OCREngine:
 
     @staticmethod
     def _gold_mask(img_bgr: np.ndarray) -> np.ndarray:
-        """Extract golden/orange game digits via HSV color mask, scaled 3×."""
+        """Extract golden/orange game digits via HSV color mask, scaled 3×.
+        Use a small 3×3 close kernel so the two dots of '÷' are NOT merged
+        into the horizontal bar — keeping them distinct helps Tesseract.
+        """
         hsv    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
         mask   = cv2.inRange(hsv, np.array([8, 100, 120]), np.array([48, 255, 255]))
-        k5     = np.ones((5, 5), np.uint8)
-        filled = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
+        k3     = np.ones((3, 3), np.uint8)
+        filled = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k3)
         h, w   = filled.shape
         return cv2.resize(filled, (w * 3, h * 3), interpolation=cv2.INTER_LANCZOS4)
 
@@ -91,7 +118,7 @@ class OCREngine:
         pil = _PILImage.fromarray(gold)
         # psm 7 = single text line; whitelist to digits + common math operators
         cfg = (r'--psm 7 --oem 3 '
-               r'-c tessedit_char_whitelist=0123456789+\-*/')
+               r'-c tessedit_char_whitelist=0123456789+\-*/÷x')
         return pytesseract.image_to_string(pil, config=cfg).strip()
 
     def extract_text_math(self, img_bgr: np.ndarray, log_cb=None) -> str:
@@ -104,6 +131,17 @@ class OCREngine:
             return ""
         gold = self._gold_mask(img_bgr)
         text = self._read_with_tesseract(gold)
+
+        # If Tesseract still returns only digits (operator was invisible),
+        # try to split the merged string at each position and see which
+        # split gives integer division — insert '/' there.
+        import re as _re
+        if text and _re.fullmatch(r'[\d\s]+', text):
+            digits = text.replace(' ', '')
+            best = _split_as_division(digits)
+            if best:
+                text = best
+
         if log_cb:
             log_cb(f"[OCR] {text!r}")
         return text
