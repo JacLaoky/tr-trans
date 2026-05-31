@@ -5,25 +5,39 @@ import sys
 
 def _split_as_division(digits: str) -> str | None:
     """
-    When Tesseract merges 'A÷B' into 'AB' (operator invisible), try every
-    split point and return 'A/B' for the first split where A÷B is a positive
-    integer.  Prefers splits near the middle (most likely location).
-    Returns None if no clean integer division found.
+    Recover 'A/B' when Tesseract merges or misreads the ÷ operator.
+
+    Phase 1 — simple split: try every position, pick first where A÷B is
+    a positive integer (prefers positions near the centre).
+    Handles: '030006' → '030/006' (÷ invisible)
+
+    Phase 2 — remove one char: if phase 1 fails, try removing each
+    internal character (the operator was read as a digit, e.g. ÷→4).
+    Handles: '4804008' → remove '4' at pos 3 → '480/008' → 480÷8=60
     """
     n = len(digits)
     if n < 2:
         return None
-    # Try splits ordered by distance from centre (most likely first)
     mid = n // 2
-    indices = sorted(range(1, n), key=lambda i: abs(i - mid))
-    for i in indices:
-        a_s = digits[:i].lstrip('0') or '0'
-        b_s = digits[i:].lstrip('0') or '0'
-        a, b = int(a_s), int(b_s)
-        if b == 0:
-            continue
-        if a % b == 0 and a > 0:
+    order = sorted(range(1, n), key=lambda i: abs(i - mid))
+
+    def _try(left: str, right: str) -> bool:
+        a = int(left.lstrip('0') or '0')
+        b = int(right.lstrip('0') or '0')
+        # Both operands must be ≤ 999 (game equations use small numbers)
+        return b > 0 and a > 0 and a % b == 0 and a <= 999 and b <= 999
+
+    # Phase 1: simple split
+    for i in order:
+        if _try(digits[:i], digits[i:]):
             return f'{digits[:i]}/{digits[i:]}'
+
+    # Phase 2: remove one internal character (operator misread as digit)
+    for rm in sorted(range(1, n - 1), key=lambda i: abs(i - mid)):
+        left, right = digits[:rm], digits[rm + 1:]
+        if left and right and _try(left, right):
+            return f'{left}/{right}'
+
     return None
 
 
