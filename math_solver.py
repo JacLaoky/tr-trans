@@ -301,16 +301,44 @@ def _div_fmt(v: float) -> str:
     return str(int(v)) if v == int(v) else f'{v:.1f}'
 
 
+def _first_17_swap(a_s: str, b_s: str) -> tuple[str, str, bool]:
+    """Return (new_a_s, new_b_s, changed) after the first single 1↔7 flip."""
+    for i, c in enumerate(a_s):
+        if c in '17':
+            return a_s[:i] + ('7' if c == '1' else '1') + a_s[i+1:], b_s, True
+    for i, c in enumerate(b_s):
+        if c in '17':
+            return a_s, b_s[:i] + ('7' if c == '1' else '1') + b_s[i+1:], True
+    return a_s, b_s, False
+
+
+def _best_17_swap_for_div(a_s: str, b_s: str) -> tuple[str, str, bool]:
+    """Return the single 1↔7 swap that makes a÷b an integer (÷-heuristic)."""
+    b = int(b_s)
+    for i, c in enumerate(a_s):
+        if c in '17':
+            na = a_s[:i] + ('7' if c == '1' else '1') + a_s[i+1:]
+            q = int(na) / b
+            if q == int(q) and q > 0:
+                return na, b_s, True
+    a = int(a_s)
+    for i, c in enumerate(b_s):
+        if c in '17':
+            nb = b_s[:i] + ('7' if c == '1' else '1') + b_s[i+1:]
+            bi = int(nb)
+            if bi > 1 and a / bi == int(a / bi) and a / bi > 0:
+                return a_s, nb, True
+    return a_s, b_s, False
+
+
 def solve_alternatives(text: str) -> list[tuple[str, str]]:
     """
     Return 1 / 2 / 4 answer candidates.
 
-    • +  ×          → 1 column  (no ambiguity)
-    • -  ÷  (no 1/7 digits)  → 2 columns: op1 | op2
-    • -  ÷  (has 1/7 digits) → 4 columns: op1_orig | op1_swap | op2_orig | op2_swap
-
-    For '-' detected:  columns = [−orig, −swap, ÷orig, ÷swap]
-    For '/' detected:  columns = [÷orig, ÷swap, −orig, −swap]
+    +  ×  (no 1/7 digit in operands)   → 1 column
+    +  ×  (has 1/7)                    → 2 columns: orig | 1↔7-swapped
+    -  ÷  (no 1/7 or no int-div swap)  → 2 columns: op1  | op2
+    -  ÷  (1↔7 swap makes ÷ integer)   → 4 columns: op1_orig | op1_swap | op2_orig | op2_swap
     """
     import re as _re
 
@@ -319,33 +347,43 @@ def solve_alternatives(text: str) -> list[tuple[str, str]]:
         return []
 
     expr, ans = primary
-    m = _re.search(r'(\d+)\s*([-/])\s*(\d+)', expr)
-    if not m or m.group(2) not in ('-', '/'):
+    m = _re.search(r'(\d+)\s*([-/+*])\s*(\d+)', expr)
+    if not m:
         return [primary]
 
     a_s, op, b_s = m.group(1), m.group(2), m.group(3)
     a, b = int(a_s), int(b_s)
+
+    # ── Addition / Multiplication: show 1↔7 swap column when present ─────────
+    if op in ('+', '*'):
+        sym = '+' if op == '+' else '×'
+        a2_s, b2_s, found = _first_17_swap(a_s, b_s)
+        if not found or (int(a2_s) == a and int(b2_s) == b):
+            return [primary]
+        a2, b2 = int(a2_s), int(b2_s)
+        ans2 = str(a2 + b2) if op == '+' else str(a2 * b2)
+        if ans2 == ans:          # swap gives same answer → no need for 2nd col
+            return [primary]
+        return [
+            (f'{a} {sym} {b}',   ans),
+            (f'{a2} {sym} {b2}', ans2),
+        ]
+
+    # ── Subtraction / Division ────────────────────────────────────────────────
     if b == 0:
         return [primary]
 
-    # ── Find best single 1↔7 swap that gives integer ÷ ──────────────────────
-    a2_s, b2_s, found = a_s, b_s, False
-    for i, c in enumerate(a_s):
-        if c in '17':
-            na = a_s[:i] + ('7' if c == '1' else '1') + a_s[i+1:]
-            if int(na) / b == int(int(na) / b) and int(na) / b > 0:
-                a2_s = na;  found = True;  break
-    if not found:
-        for i, c in enumerate(b_s):
-            if c in '17':
-                nb = b_s[:i] + ('7' if c == '1' else '1') + b_s[i+1:]
-                bi = int(nb)
-                if bi > 1 and a / bi == int(a / bi) and a / bi > 0:
-                    b2_s = nb;  found = True;  break
+    # Only promote to 4 columns when a 1↔7 swap makes ÷ an integer
+    # (strongest signal that OCR misread a digit).
+    # For the '-' case the original may already give integer ÷; only swap if
+    # the swapped version gives a DIFFERENT integer result.
+    a2_s, b2_s, found = _best_17_swap_for_div(a_s, b_s)
     a2, b2 = int(a2_s), int(b2_s)
 
-    sub1, sub2 = str(a - b),  str(a2 - b2)
-    div1, div2 = _div_fmt(a / b), _div_fmt(a2 / b2)
+    sub1 = str(a  - b)
+    sub2 = str(a2 - b2)
+    div1 = _div_fmt(a  / b)
+    div2 = _div_fmt(a2 / b2) if b2 != 0 else '?'
 
     if found and (a2 != a or b2 != b):
         # 4 columns
@@ -353,14 +391,15 @@ def solve_alternatives(text: str) -> list[tuple[str, str]]:
             return [(f'{a} − {b}',   sub1), (f'{a2} − {b2}', sub2),
                     (f'{a} ÷ {b}',   div1), (f'{a2} ÷ {b2}', div2)]
         else:
-            return [(f'{a} ÷ {b}',   ans),  (f'{a2} ÷ {b2}', div2),
+            # Use div1 (not ans) so format is consistent with _div_fmt
+            return [(f'{a} ÷ {b}',   div1), (f'{a2} ÷ {b2}', div2),
                     (f'{a} − {b}',   sub1), (f'{a2} − {b2}', sub2)]
     else:
         # 2 columns
         if op == '-':
             return [(f'{a} − {b}', sub1), (f'{a} ÷ {b}', div1)]
         else:
-            return [(f'{a} ÷ {b}', ans),  (f'{a} − {b}', sub1)]
+            return [(f'{a} ÷ {b}', div1), (f'{a} − {b}', sub1)]
 
 
 # ── Quick test ────────────────────────────────────────────────────────────────
